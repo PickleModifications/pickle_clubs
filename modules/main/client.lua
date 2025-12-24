@@ -60,12 +60,18 @@ function RegisterEntityType(entityType, data)
         label = data.label or entityType,
         description = data.description or "This is the " .. entityType .. " entity type.",
         data =  data.data or {},
-        onRender = data.onRender or (function(data)
-            print("ERROR: No onRender callback for entity type: " .. entityType)
-        end),
-        onUnrender = data.onUnrender or (function()
-            print("ERROR: No onUnrender callback for entity type: " .. entityType)
-        end),
+        onRender = function(id, entityId)
+            TriggerServerEvent("pickle_clubs:renderEntity", id, entityId)
+            if data.onRender then
+                data.onRender(id, entityId)
+            end
+        end,
+        onUnrender = function(...)
+            -- TriggerServerEvent("pickle_clubs:unrenderEntity", entityType, ...)
+            if data.onUnrender then
+                data.onUnrender(...)
+            end
+        end,
     }
 end
 

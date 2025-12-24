@@ -250,8 +250,8 @@ CreateThread(function()
         return xPlayer.hasWeapon(name)
     end
 
-    RegisterCallback("pickle_clubs:getInventory", function(source, cb)
-        cb(Inventory.GetInventory(source))
+    lib.callback.register("pickle_clubs:getInventory", function(source)
+        return Inventory.GetInventory(source)
     end)
     
     if GetResourceState("ox_inventory") == "started" then 

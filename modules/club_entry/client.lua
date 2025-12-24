@@ -168,9 +168,7 @@ function ClubEntryThread(id, entityId)
         DisableControlAction(0, 31, true)   -- move up/down
         ShowInteractText(_L("enter_line_wait"))
         if IsControlJustPressed(1, 51) then
-            CurrentLine = nil
-            FreezeEntityPosition(PlayerPedId(), false)
-            table.remove(entry.players, #entry.players)
+            TriggerServerEvent("pickle_clubs:leaveLine", id, entityId)
         end
     else
         local lineStart = line.coords - (line.forward * playerCount)
@@ -179,21 +177,70 @@ function ClubEntryThread(id, entityId)
         if dist < 1.25 then
             ShowInteractText("[E] - " .. _L("enter_line"))
             if IsControlJustPressed(1, 51) then
-                CurrentLine = {
-                    id = id,
-                    entityId = entityId,
-                }
-                table.insert(entry.players, {
-                    identifier = "example",
-                })
-                SetEntityCoords(PlayerPedId(), lineStart.x, lineStart.y, lineStart.z)
-                SetEntityRotation(PlayerPedId(), 0.0, 0.0, line.heading, 2, true)
-                FreezeEntityPosition(PlayerPedId(), true)
-                ClearPedTasksImmediately(PlayerPedId())
+                TriggerServerEvent("pickle_clubs:enterLine", id, entityId)
             end
         end
     end
 end
+
+function RefreshCEL(id, entityId)
+    local entry = GetClubEntry(id, entityId)
+    if not entry then return end
+    local inLine = false
+    local playerCount = 0 
+    local source = GetPlayerServerId(PlayerId())
+    for i=1, #entry.players do
+        local player = entry.players[i]
+        if player.source ~= source then
+            playerCount = playerCount + 1
+        else 
+            inLine = true
+            break
+        end
+    end
+    if not inLine then return end
+    local line = entry.line
+    local lineStart = line.coords - (line.forward * playerCount)
+    SetEntityCoords(PlayerPedId(), lineStart.x, lineStart.y, lineStart.z)
+    SetEntityRotation(PlayerPedId(), 0.0, 0.0, line.heading, 2, true)
+    FreezeEntityPosition(PlayerPedId(), true)
+    ClearPedTasksImmediately(PlayerPedId())
+end
+
+RegisterNetEvent("pickle_clubs:enterLine", function(id, entityId, target, newPlayers)
+    local entry = GetClubEntry(id, entityId)
+    if not entry then return end
+    entry.players = newPlayers
+    local source = GetPlayerServerId(PlayerId())
+    if source == target then
+        CurrentLine = {
+            id = id,
+            entityId = entityId,
+        }
+    end
+    RefreshCEL(id, entityId)
+end)
+
+RegisterNetEvent("pickle_clubs:leaveLine", function(id, entityId, target, newPlayers)
+    local entry = GetClubEntry(id, entityId)
+    if not entry then return end
+    entry.players = newPlayers
+    local source = GetPlayerServerId(PlayerId())
+    if source == target then
+        CurrentLine = nil
+        FreezeEntityPosition(PlayerPedId(), false)
+        ClearPedTasksImmediately(PlayerPedId())
+    end
+    RefreshCEL(id, entityId)
+end)
+
+RegisterNetEvent("pickle_clubs:updateClubEntry", function(id, entityId, entry)
+    print("RECIEVED UPDATE FOR CLUB ENTRY: " .. id .. " " .. entityId)
+    if not entry then return end
+    local localEntry = GetClubEntry(id, entityId)
+    if not localEntry then return end
+    localEntry.players = entry.players
+end)
 
 CreateThread(function()
     -- DEBUG_RAYCAST_DOOR()
