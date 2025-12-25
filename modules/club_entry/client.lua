@@ -57,7 +57,7 @@ function GetLocalClubDoor(id, entityId, doorIndex)
     return closest.obj
 end
 
-function RegisterClubEntry(id, entityId)
+function RenderClubEntry(id, entityId)
     if not ClubEntries[id] then ClubEntries[id] = {} end
     local club = Clubs[id]
     if not club then return end
@@ -107,7 +107,7 @@ function DoesClubEntryExist(id, entityId)
     return ClubEntries[id] and ClubEntries[id][entityId]
 end
 
-function UnregisterClubEntry(id, entityId)
+function UnrenderClubEntry(id, entityId)
     if not DoesClubEntryExist(id, entityId) then return end
     local entry = ClubEntries[id][entityId]
     if DoesEntityExist(entry.bouncer.ped) then
@@ -166,7 +166,7 @@ function ClubEntryThread(id, entityId)
         DisableControlAction(0, 143, true)  -- melee duck
         DisableControlAction(0, 30, true)   -- move left/right
         DisableControlAction(0, 31, true)   -- move up/down
-        ShowInteractText(_L("enter_line_wait"))
+        ShowInteractText(_L("enter_line_wait", CurrentLine.position, #entry.players))
         if IsControlJustPressed(1, 51) then
             TriggerServerEvent("pickle_clubs:leaveLine", id, entityId)
         end
@@ -195,6 +195,9 @@ function RefreshCEL(id, entityId)
             playerCount = playerCount + 1
         else 
             inLine = true
+            if CurrentLine then 
+                CurrentLine.position = playerCount + 1
+            end
             break
         end
     end
@@ -207,6 +210,50 @@ function RefreshCEL(id, entityId)
     ClearPedTasksImmediately(PlayerPedId())
 end
 
+function PromptCEL(id, entityId)
+    local entry = GetClubEntry(id, entityId)
+    if not entry then return end
+    if not CurrentLine then return end
+    if CurrentLine.id ~= id or CurrentLine.entityId ~= entityId then return end    
+    local ped = entry.bouncer.ped
+    local pedCoords = GetEntityCoords(ped)
+    local forward = GetEntityForwardVector(ped)
+    local heading = GetEntityHeading(ped)
+    local coords = pedCoords + (forward * 0.5)
+    StartClubPrompt(coords, heading, {
+        dialog = {
+            speech = "Welcome to the club! It'll cost you $1000 to get in.",
+            options = {
+                {
+                    label = "Freak you man, I'm not paying that shit.",
+                    description = "You will be forcibly escorted out of the club.",
+                    dialog = {
+                        speech = "Sorry, gotta pay up to get in.",
+                    }
+                },
+                {
+                    label = "I'll pay it - gotta get the party started.",
+                    description = "This will deduct $1000 from your bank account.",
+                    dialog = {
+                        speech = "ERROR: No speech selected for this.",
+                        finish = true,
+                        speechSelect = function()
+                            if lib.callback.await("pickle_clubs:payEntry", false, 1000) then
+                                return "Thanks for your business! Enjoy the club!"
+                            else
+                                return "Sorry, you don't have enough money."
+                            end
+                        end,
+                        onStart = function()
+                            print("PAY THE MAN!")
+                        end,
+                    }
+                },
+            }
+        }
+    })
+end
+
 RegisterNetEvent("pickle_clubs:enterLine", function(id, entityId, target, newPlayers)
     local entry = GetClubEntry(id, entityId)
     if not entry then return end
@@ -216,6 +263,7 @@ RegisterNetEvent("pickle_clubs:enterLine", function(id, entityId, target, newPla
         CurrentLine = {
             id = id,
             entityId = entityId,
+            position = -1,
         }
     end
     RefreshCEL(id, entityId)
@@ -230,6 +278,7 @@ RegisterNetEvent("pickle_clubs:leaveLine", function(id, entityId, target, newPla
         CurrentLine = nil
         FreezeEntityPosition(PlayerPedId(), false)
         ClearPedTasksImmediately(PlayerPedId())
+        ExitScriptedCamera()
     end
     RefreshCEL(id, entityId)
 end)
@@ -242,17 +291,21 @@ RegisterNetEvent("pickle_clubs:updateClubEntry", function(id, entityId, entry)
     localEntry.players = entry.players
 end)
 
+RegisterNetEvent("pickle_clubs:promptCEL", function(id, entityId)
+    PromptCEL(id, entityId)
+end)
+
 CreateThread(function()
     -- DEBUG_RAYCAST_DOOR()
     RegisterEntityType("club_entry", {
         label = "Club Entry",
         description = "This is the club entry entity type.",
         onRender = function(id, entityId)
-            RegisterClubEntry(id, entityId)
+            RenderClubEntry(id, entityId)
             print("Registered Club Entry: " .. entityId .. " for club: " .. id)
         end,
         onUnrender = function(id, entityId)
-            UnregisterClubEntry(id, entityId)
+            UnrenderClubEntry(id, entityId)
             print("Unregistered Club Entry: " .. entityId .. " for club: " .. id)
         end,
     })

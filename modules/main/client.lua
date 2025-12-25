@@ -1,6 +1,31 @@
 Clubs = {}
 LocalClubs = {}
 RegisteredEntityTypes = {}
+CurrentCamera = nil
+
+function CreateScriptedCamera()
+    if CurrentCamera then ExitScriptedCamera() end
+    local initialCamSettings = {
+        coords = GetGameplayCamCoord(),
+        rotation = GetGameplayCamRot(),
+        fov = GetGameplayCamFov(),
+    }
+    CurrentCamera = CreateCamWithParams("DEFAULT_SCRIPTED_CAMERA", 
+        initialCamSettings.coords.x, initialCamSettings.coords.y, initialCamSettings.coords.z, 
+        initialCamSettings.rotation.x, initialCamSettings.rotation.y, initialCamSettings.rotation.z, initialCamSettings.fov
+    )
+    SetCamActive(CurrentCamera, true)
+    RenderScriptCams(true, false, 0, true, true)
+end
+
+function ExitScriptedCamera(durationValue)
+    local duration = durationValue
+    if duration == nil then duration = 2000 end
+    ClearFocus()
+	DestroyAllCams()
+    RenderScriptCams(false, true, duration, true, false) 
+end
+
 
 function RegisterClub(id, data)
     Clubs[id] = data
@@ -92,6 +117,87 @@ function CreateClubNPC(pedId, coords, heading)
     SetBlockingOfNonTemporaryEvents(npc, true)
     FreezeEntityPosition(npc, true)
     return npc
+end
+
+local DialogContextCounter = 0
+
+function StartClubPrompt(coords, heading, data)
+    if not data or not data.dialog then return end
+    -- Reset context counter for new prompt
+    DialogContextCounter = 0
+    CreateScriptedCamera()
+    SetCamParams(CurrentCamera, coords.x, coords.y, coords.z + 0.5,
+        0.0, 0.0, heading + 180.0, 90.0, 
+        2000, 0, 0, 2
+    )
+    ShowDialogMenu(data.dialog)
+end
+
+function ShowDialogMenu(dialog, menuId)
+    if not dialog then return end
+    
+    -- Call onStart callback if it exists
+    if dialog.onStart then
+        dialog.onStart()
+    end
+    
+    DialogContextCounter = DialogContextCounter + 1
+    local contextId = ('pickle_clubs_dialog_%s'):format(DialogContextCounter)
+    local menuOptions = {}
+    
+    dialog.options = dialog.options or {}
+    for i=1, #dialog.options do
+        local option = dialog.options[i]
+        local menuOption = {
+            title = option.label,
+            description = option.description or "",
+            icon = option.icon,
+        }
+        
+        -- If option has a nested dialog, create a submenu
+        if option.dialog then
+            menuOption.onSelect = function()
+                -- Call option's onSelect callback if it exists before showing nested dialog
+                if option.onSelect then
+                    option.onSelect()
+                end
+                ShowDialogMenu(option.dialog, contextId)
+            end
+        else
+            -- Leaf option - handle selection
+            menuOption.onSelect = function()
+                if option.onSelect then
+                    option.onSelect()
+                end
+                -- If dialog should finish, close camera
+                if dialog.finish then
+
+                end
+            end
+        end
+        
+        table.insert(menuOptions, menuOption)
+    end
+    
+    -- If dialog has finish=true and no options, add a default close option
+    if dialog.finish then
+        SetTimeout(2000, function()
+            ExitScriptedCamera()
+            lib.hideContext(contextId)
+        end)
+    end
+    if dialog.speechSelect then
+        dialog.speech = dialog.speechSelect()
+    end
+    -- Register and show context menu
+    lib.registerContext({
+        id = contextId,
+        menu = menuId,
+        title = dialog.speech or dialog.title or "Dialog",
+        options = menuOptions
+    })
+    
+    lib.showContext(contextId)
 end
 
 AddEventHandler('onResourceStart', function(resource)
