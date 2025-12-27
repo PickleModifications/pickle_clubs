@@ -136,17 +136,23 @@ CreateThread(function()
         entities = {
             ["abc-123456"] = {
                 type = "club_entry",
-                doors = {
-                    {coords = vector3(119.1173, -1289.0688, 28.2532), heading = 211.4423, model = `prop_strip_door_01`},
-                },
                 bouncer = {
                     ped = "bouncer_1",
                     coords = vector3(127.9870, -1299.3616, 28.2327), 
                     heading = 210.3588
                 },
                 line = {
+                    direction = "forward",
                     coords = vector3(129.5437, -1299.7993, 28.2327),
                     heading = 29.7786
+                }
+            },
+            ["abc-123457"] = {
+                type = "bouncer",
+                bouncer = {
+                    ped = "bouncer_1",
+                    coords = vector3(113.8438, -1302.6359, 28.0192),
+                    heading = 293.9726
                 }
             }
         }

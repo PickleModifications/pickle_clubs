@@ -91,10 +91,10 @@ function RegisterEntityType(entityType, data)
                 data.onRender(id, entityId)
             end
         end,
-        onUnrender = function(...)
-            -- TriggerServerEvent("pickle_clubs:unrenderEntity", entityType, ...)
+        onUnrender = function(id, entityId)
+            TriggerServerEvent("pickle_clubs:unrenderEntity", id, entityId)
             if data.onUnrender then
-                data.onUnrender(...)
+                data.onUnrender(id, entityId)
             end
         end,
     }
@@ -131,6 +131,11 @@ function StartClubPrompt(coords, heading, data)
         2000, 0, 0, 2
     )
     ShowDialogMenu(data.dialog)
+end
+
+function StopClubPrompt()
+    ExitScriptedCamera()
+    lib.hideContext()
 end
 
 function ShowDialogMenu(dialog, menuId)
@@ -199,6 +204,21 @@ function ShowDialogMenu(dialog, menuId)
     
     lib.showContext(contextId)
 end
+
+CreateThread(function()
+    while true do
+        for k,v in pairs(Clubs) do
+            local pcoords = GetEntityCoords(PlayerPedId())
+            local dist = #(pcoords - v.coords)
+            if dist <= Config.RenderDistance and not LocalClubs[k] then
+                RenderClub(k)
+            elseif LocalClubs[k] and dist > Config.RenderDistance then
+                UnrenderClub(k)
+            end
+        end
+        Wait(1500)
+    end
+end)
 
 AddEventHandler('onResourceStart', function(resource)
     Wait(1000)

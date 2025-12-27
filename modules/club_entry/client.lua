@@ -1,5 +1,8 @@
 local ClubEntries = {}
 local CurrentLine = nil
+local IsYeeted = false
+local ClubPasses = {}
+local CurrentClub = nil
 
 function DEBUG_RAYCAST_DOOR()
     CreateThread(function()
@@ -31,32 +34,6 @@ function DEBUG_RAYCAST_DOOR()
     end)
 end
 
-function GetClubDoorHash(id, entityId, doorIndex)
-    return GetHashKey(('pickle_clubs_%s_%s_%s'):format(id, entityId, doorIndex))
-end
-
-function GetLocalClubDoor(id, entityId, doorIndex)
-    if not Clubs[id] then return end
-    if not Clubs[id].entities[entityId] then return end
-    local doorCfg = Clubs[id].entities[entityId].doors[doorIndex]
-    if not doorCfg then return end
-    local pool = GetGamePool("CObject")
-    local closest
-    for i=1, #pool do
-        local obj = pool[i]
-        if GetEntityModel(obj) == doorCfg.model then
-            local dist = #(GetEntityCoords(obj) - doorCfg.coords)
-            if not closest or dist < closest.dist then
-                closest = {
-                    obj = obj,
-                    dist = dist
-                }
-            end
-        end
-    end
-    return closest.obj
-end
-
 function RenderClubEntry(id, entityId)
     if not ClubEntries[id] then ClubEntries[id] = {} end
     local club = Clubs[id]
@@ -64,7 +41,6 @@ function RenderClubEntry(id, entityId)
     local entity = club.entities[entityId]
     if not entity then return end
     local entry = {
-        doors = {},
         bouncer = {},
         line = {},
         players = {},
@@ -72,33 +48,54 @@ function RenderClubEntry(id, entityId)
     -- TODO entry.doors
     -- TODO entry.bouncer
     -- TODO entry.line
+    entry.interact = CreateInteraction({
+        label = _L("enter_line"),
+        coords = entity.bouncer.coords + vector3(0.0, 0.0, 1.0), 
+        heading = entity.bouncer.heading,
+    }, function()
+        PromptCEL(id, entityId)
+    end)
     entry.bouncer.ped = CreateClubNPC(entity.bouncer.ped, entity.bouncer.coords, entity.bouncer.heading)
-    for i=1, #entity.doors do
-        local doorHash = GetClubDoorHash(id, entityId, i)
-        local localDoor = GetLocalClubDoor(id, entityId, i)
-        if not localDoor then return end
-        local coords = GetEntityCoords(localDoor)
-        print("Adding door to system for: " .. doorHash .. " with model: " .. entity.doors[i].model .. " at coords: " .. coords.x .. ", " .. coords.y .. ", " .. coords.z)
-        AddDoorToSystem(
-            doorHash, 
-            entity.doors[i].model, 
-            coords.x, 
-            coords.y, 
-            coords.z, 
-            false, 
-            false, 
-            false
-        )
-        entry.doors[i] = { locked = false, heading = GetEntityHeading(localDoor) }
-        SetTimeout(1000, function()
-            SetClubDoorState(id, entityId, i, true)
-        end)
-    end
     local temp = CreateTennisBall(entity.line.coords.x, entity.line.coords.y, entity.line.coords.z)
     SetEntityRotation(temp, 0.0, 0.0, entity.line.heading, 2, true)
     entry.line.coords = entity.line.coords
     entry.line.heading = entity.line.heading
-    entry.line.forward = GetEntityForwardVector(temp)
+    local forwardVector, rightVector, upVector, position = GetEntityMatrix(temp)
+    entry.line.forward = forwardVector
+    entry.line.right = rightVector
+    entry.line.barriers = {}
+    if entity.line.direction == "forward" then
+        local instances = {
+            {
+                coords = vector3(1.0, -0.5, 0.0),
+                heading = 0.0
+            },
+            {
+                coords = vector3(-1.0, -0.5, 0.0),
+                heading = 0.0
+            },
+            {
+                coords = vector3(1.0, -2.5, 0.0),
+                heading = 0.0
+            },
+            {
+                coords = vector3(-1.0, -2.5, 0.0),
+                heading = 0.0
+            },
+            {
+                coords = vector3(2.0, 0.5, 0.0),
+                heading = 90.0
+            },
+        }
+        for i=1, #instances do
+            local coords = entity.line.coords + (entry.line.forward * instances[i].coords.y) + (entry.line.forward * -1) + (entry.line.right * instances[i].coords.x)
+            local barrier = CreateProp(`ba_prop_battle_barrier_02a`, coords.x, coords.y, coords.z + instances[i].coords.z)
+            FreezeEntityPosition(barrier, true)
+            SetEntityRotation(barrier, 0.0, 0.0, entity.line.heading + 90.0 + instances[i].heading, 2, true)
+            SetCanClimbOnEntity(barrier, false)
+            table.insert(entry.line.barriers, barrier)
+        end
+    end
     DeleteScriptObject(temp)
     ClubEntries[id][entityId] = entry
 end
@@ -113,30 +110,13 @@ function UnrenderClubEntry(id, entityId)
     if DoesEntityExist(entry.bouncer.ped) then
         DeleteEntity(entry.bouncer.ped)
     end
+    for i=1, #entry.line.barriers do
+        if DoesEntityExist(entry.line.barriers[i]) then
+            DeleteEntity(entry.line.barriers[i])
+        end
+    end
     ClubEntries[id][entityId] = nil
     print("Unregistered Club Entry: " .. entityId .. " for club: " .. id)
-end
-
-function GetClubDoorState(id, entityId, doorIndex)
-    if not DoesClubEntryExist(id, entityId) then return end
-    local entry = ClubEntries[id][entityId]
-    if not entry.doors[doorIndex] then return end
-    return entry.doors[doorIndex].locked
-end
-
-function SetClubDoorState(id, entityId, doorIndex, state)
-    if not DoesClubEntryExist(id, entityId) then return end
-    local entry = ClubEntries[id][entityId]
-    if not entry.doors[doorIndex] then return end
-    entry.doors[doorIndex].locked = state
-    local doorHash = GetClubDoorHash(id, entityId, doorIndex)
-    DoorSystemSetDoorState(doorHash, state and 1 or 0, false, false)
-    DoorSystemSetHoldOpen(doorHash, false)
-    if state then
-        local localDoor = GetLocalClubDoor(id, entityId, doorIndex)
-        DoorSystemSetOpenRatio(doorHash, 0.0, true)
-        SetEntityRotation(localDoor, 0.0, 0.0, entry.doors[doorIndex].heading, 2, true)
-    end
 end
 
 function GetClubEntry(id, entityId)
@@ -146,40 +126,30 @@ end
 function ClubEntryThread(id, entityId)
     local entry = GetClubEntry(id, entityId)
     if not entry then return end
-    local playerCount = #entry.players or 0
-    local line = entry.line
-    if not line then return end
-    if CurrentLine then
-        if CurrentLine.id ~= id or CurrentLine.entityId ~= entityId then return end
-        -- Disable walking
-        DisableControlAction(0, 21, true)   -- sprint
-        DisableControlAction(0, 22, true)   -- jump
-        DisableControlAction(0, 24, true)   -- attack (left mouse)
-        DisableControlAction(0, 25, true)   -- aim (right mouse)
-        DisableControlAction(0, 68, true)   -- attack 2
-        DisableControlAction(0, 37, true)   -- select weapon
-        DisableControlAction(0, 44, true)   -- cover
-        DisableControlAction(0, 140, true)  -- melee attack alt
-        DisableControlAction(0, 141, true)  -- melee attack alt
-        DisableControlAction(0, 142, true)  -- melee attack alt
-        DisableControlAction(0, 257, true)  -- melee attack alternate
-        DisableControlAction(0, 143, true)  -- melee duck
-        DisableControlAction(0, 30, true)   -- move left/right
-        DisableControlAction(0, 31, true)   -- move up/down
-        ShowInteractText(_L("enter_line_wait", CurrentLine.position, #entry.players))
-        if IsControlJustPressed(1, 51) then
-            TriggerServerEvent("pickle_clubs:leaveLine", id, entityId)
-        end
-    else
-        local lineStart = line.coords - (line.forward * playerCount)
-        local dist = #(GetEntityCoords(PlayerPedId()) - lineStart)
-        DrawMarker(1, lineStart.x, lineStart.y, lineStart.z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 255, 0, 0, 255, false, true)
-        if dist < 1.25 then
-            ShowInteractText("[E] - " .. _L("enter_line"))
-            if IsControlJustPressed(1, 51) then
-                TriggerServerEvent("pickle_clubs:enterLine", id, entityId)
+    if not CanEnterClub(id) and not IsYeeted then
+        local ped = PlayerPedId()
+        local pcoords = GetEntityCoords(ped)
+        local doorCoords = entry.line.coords + (entry.line.forward * 2)
+        local dist = #(pcoords - (doorCoords + vector3(0.0, 0.0, 1.0)))
+        if dist < (0.5 * (IsPedInAnyVehicle(ped, false) and 2.0 or 1.0)) then
+            ShowNotification(_L("club_entry_no_pass"))
+            IsYeeted = true
+            if IsPedInAnyVehicle(ped, false) then
+                local vehicle = GetVehiclePedIsIn(ped, false)
+                DeleteEntity(vehicle)
             end
+            local forward = -entry.line.forward
+            local force = 15
+            SetEntityVelocity(ped, forward.x * force, forward.y * force,  3.0)
+            SetTimeout(100, function()
+                SetPedToRagdoll(ped, 3000, 3000, 0, false, false, false)
+            end)
+            SetTimeout(1000, function()
+                IsYeeted = false
+            end)
         end
+        
+        -- DrawMarker(1, doorCoords.x, doorCoords.y, doorCoords.z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 255, 0, 0, 255, false, true)
     end
 end
 
@@ -213,8 +183,6 @@ end
 function PromptCEL(id, entityId)
     local entry = GetClubEntry(id, entityId)
     if not entry then return end
-    if not CurrentLine then return end
-    if CurrentLine.id ~= id or CurrentLine.entityId ~= entityId then return end    
     local ped = entry.bouncer.ped
     local pedCoords = GetEntityCoords(ped)
     local forward = GetEntityForwardVector(ped)
@@ -238,7 +206,7 @@ function PromptCEL(id, entityId)
                         speech = "ERROR: No speech selected for this.",
                         finish = true,
                         speechSelect = function()
-                            if lib.callback.await("pickle_clubs:payEntry", false, 1000) then
+                            if lib.callback.await("pickle_clubs:payEntry", false, id, entityId) then
                                 return "Thanks for your business! Enjoy the club!"
                             else
                                 return "Sorry, you don't have enough money."
@@ -254,37 +222,11 @@ function PromptCEL(id, entityId)
     })
 end
 
-RegisterNetEvent("pickle_clubs:enterLine", function(id, entityId, target, newPlayers)
-    local entry = GetClubEntry(id, entityId)
-    if not entry then return end
-    entry.players = newPlayers
-    local source = GetPlayerServerId(PlayerId())
-    if source == target then
-        CurrentLine = {
-            id = id,
-            entityId = entityId,
-            position = -1,
-        }
-    end
-    RefreshCEL(id, entityId)
-end)
-
-RegisterNetEvent("pickle_clubs:leaveLine", function(id, entityId, target, newPlayers)
-    local entry = GetClubEntry(id, entityId)
-    if not entry then return end
-    entry.players = newPlayers
-    local source = GetPlayerServerId(PlayerId())
-    if source == target then
-        CurrentLine = nil
-        FreezeEntityPosition(PlayerPedId(), false)
-        ClearPedTasksImmediately(PlayerPedId())
-        ExitScriptedCamera()
-    end
-    RefreshCEL(id, entityId)
-end)
+function CanEnterClub(id)
+    return ClubPasses[id]
+end
 
 RegisterNetEvent("pickle_clubs:updateClubEntry", function(id, entityId, entry)
-    print("RECIEVED UPDATE FOR CLUB ENTRY: " .. id .. " " .. entityId)
     if not entry then return end
     local localEntry = GetClubEntry(id, entityId)
     if not localEntry then return end
@@ -293,6 +235,10 @@ end)
 
 RegisterNetEvent("pickle_clubs:promptCEL", function(id, entityId)
     PromptCEL(id, entityId)
+end)
+
+RegisterNetEvent("pickle_clubs:updateClubPass", function(id, pass)
+    ClubPasses[id] = pass
 end)
 
 CreateThread(function()
@@ -305,6 +251,9 @@ CreateThread(function()
             print("Registered Club Entry: " .. entityId .. " for club: " .. id)
         end,
         onUnrender = function(id, entityId)
+            if CurrentClub and CurrentClub == id then
+                CurrentClub = nil
+            end
             UnrenderClubEntry(id, entityId)
             print("Unregistered Club Entry: " .. entityId .. " for club: " .. id)
         end,
@@ -315,15 +264,12 @@ CreateThread(function()
         local closest = nil
         for k,v in pairs(ClubEntries) do
             for entityId, entity in pairs(v) do
-                for i=1, #entity.doors do
-                    local dist = #(pcoords - GetEntityCoords(entity.doors[i].obj))
-                    if not closest or dist < closest.dist then
-                        closest = {
-                            clubId = k,
-                            entityId = entityId,
-                            doorIndex = i,
-                        }
-                    end
+                local dist = #(pcoords - entity.line.coords)
+                if not closest or dist < closest.dist then
+                    closest = {
+                        clubId = k,
+                        entityId = entityId,
+                    }
                 end
             end
         end
