@@ -111,6 +111,90 @@ function GetDirectionCoords(coords, rotation, intersectType)
 	return hit, endCoords, entityHit 
 end
 
+
+function ConvertScreenCoordinates(position)
+    local onScreen, _x, _y = GetScreenCoordFromWorldCoord(position.x, position.y, position.z)
+    if not onScreen then
+        return nil
+    end
+
+    local newPos = {}
+    newPos.x = (_x - 0.5) * 2
+    newPos.y = (_y - 0.5) * 2
+    newPos.z = 0
+    return vector3(newPos.x, newPos.y, newPos.z)
+end
+
+function ScreenToWorld(camPos, camRot, relX, relY)
+    local cameraRange = 1.0
+    local camForward = GetDirectionFromRotation(camRot)
+    local rotUp = camRot + vector3(cameraRange, 0, 0)
+    local rotDown = camRot + vector3(-cameraRange, 0, 0)
+    local rotLeft = camRot + vector3(0, 0, -cameraRange)
+    local rotRight = camRot + vector3(0, 0, cameraRange)
+
+    local camRight = GetDirectionFromRotation(rotRight) - GetDirectionFromRotation(rotLeft)
+    local camUp = GetDirectionFromRotation(rotUp) - GetDirectionFromRotation(rotDown)
+
+    local rollRad = -((camRot.y * math.pi) / 180.0)
+    local camRightRoll = (camRight * math.cos(rollRad)) - (camUp * math.sin(rollRad))
+    local camUpRoll = (camRight * math.sin(rollRad)) + (camUp * math.cos(rollRad))
+    local screenCoords = ConvertScreenCoordinates(((camPos + (camForward * cameraRange)) + camRightRoll) + camUpRoll)
+
+    if screenCoords == undefined then
+        return (camPos + (camForward * cameraRange))
+    end
+
+    local zero3d = (camPos + (camForward * cameraRange))
+    local zero2d = ConvertScreenCoordinates(zero3d)
+
+    if zero2d == nil then
+        return (camPos + (camForward * cameraRange))
+    end
+
+    if math.abs(screenCoords.x - zero2d.x) < 0.001 or math.abs(screenCoords.y - zero2d.y) < 0.001 then
+        return (camPos + (camForward * cameraRange))
+    end
+
+    local scaleX = (relX - zero2d.x) / (screenCoords.x - zero2d.x)
+    local scaleY = (relY - zero2d.y) / (screenCoords.y - zero2d.y)
+    return ((camPos + (camForward * cameraRange)) + (camRightRoll * scaleX)) + (camUpRoll * scaleY)
+end
+
+function GetCursorRaycast(camPos, camRot, flags, ignore)
+    local x, y = GetNuiCursorPosition()
+
+    local absoluteX = x
+    local absoluteY = y
+
+    local screenX, screenY = GetActiveScreenResolution()
+
+    local relativeX = 1 - (x / screenX) * 1.0 * 2
+    local relativeY = 1 - (y / screenY) * 1.0 * 2
+
+    if relativeX > 0.0 then
+        relativeX = -relativeX;
+    else
+        relativeX = math.abs(relativeX)
+    end
+
+    if relativeY > 0.0 then
+        relativeY = -relativeY
+    else
+        relativeY = math.abs(relativeY)
+    end
+    
+    local target = ScreenToWorld(camPos, camRot, relativeX, relativeY)
+
+    local dir = target - camPos
+    local from = camPos + (dir * 0.05)
+    local to = camPos + (dir * 300)
+
+    local ray = StartShapeTestRay(from.x, from.y, from.z, to.x, to.y, to.z, -1, -1, 1)
+    local retval, hit, endCoords, surfaceNormal, entityHit = GetShapeTestResult(ray)
+    return hit, endCoords, entityHit
+end
+
 function StartGizmoEditor(data)
     if inGizmo then return false end
     inGizmo = true
