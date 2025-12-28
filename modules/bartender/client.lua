@@ -43,7 +43,7 @@ CreateThread(function()
     DeleteEntity(temp)
     CreateScriptedCamera()
     local camCoords = coords + (forwardVector * -0.5)
-    SetCamParams(CurrentCamera, camCoords.x, camCoords.y, camCoords.z + 0.5,
+    SetCamParams(CurrentCamera, camCoords.x, camCoords.y, camCoords.z + 0.4,
         0.0, 0.0, heading, 90.0, 
         0, 0, 0, 2
     )
@@ -52,10 +52,14 @@ CreateThread(function()
             [CreateBottle(coords + (rightVector * -0.25), heading)] = {
                 type = "bottle",
                 progress = 0.0,
+                zOffset = 0.0,
+                ptfx = nil,
             },
             [CreateBottle(coords, heading, 1.0)] = {
                 type = "bottle",
                 progress = 1.0,
+                zOffset = 0.0,
+                ptfx = nil,
             },
         }
         local CURRENT_ENTITY = nil
@@ -75,7 +79,6 @@ CreateThread(function()
                 local hit, hitCoords, entityHit = GetDirectionCoords(dragCoords, vector3(0.0, 0.0, heading))
                 DrawMarker(1, dragCoords.x, dragCoords.y, dragCoords.z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.1, 0.1, 255, 0, 0, 255, false, false, 2)
                 if IsDisabledControlJustPressed(0, 24)  then
-                    print(hit, hitCoords, entityHit)
                     if hit and DoesEntityExist(entityHit) and ENTITIES[entityHit] then
                         CURRENT_ENTITY = entityHit
                         pitch = GetEntityRotation(CURRENT_ENTITY).x
@@ -106,13 +109,28 @@ CreateThread(function()
                     end
                     if closestChild then
                         if currentEntity.progress > 0.0 then
-                            currentEntity.progress = currentEntity.progress - 0.005
+                            currentEntity.progress = currentEntity.progress - 0.0005
+                        end
+                        if not currentEntity.ptfx then
+                            RequestNamedPtfxAsset("cut_family1")
+                            while not HasNamedPtfxAssetLoaded("cut_family1") do
+                                Wait(0)
+                            end
+                            UseParticleFxAssetNextCall("cut_family1")
+                            currentEntity.ptfx = StartParticleFxLoopedOnEntity("cs_fam1_bourbon_pour", CURRENT_ENTITY, 0.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.5, false, false, false)
+                            SetParticleFxLoopedColour(currentEntity.ptfx, 255, 0, 0, 255)
                         end
                         TEMP_ENTITIES[CURRENT_ENTITY].progress = currentEntity.progress
                         local childEntity = ENTITIES[closestChild.entity]
                         if childEntity.type == "bottle" and childEntity.progress < 1.0 then
                             childEntity.progress = childEntity.progress + 0.005
                             TEMP_ENTITIES[closestChild.entity].progress = childEntity.progress
+                        end
+                    else
+                        if currentEntity.ptfx then
+                            StopParticleFxLooped(currentEntity.ptfx, false)
+                            RemoveParticleFx(currentEntity.ptfx, true)
+                            currentEntity.ptfx = nil
                         end
                     end
                 end
@@ -135,12 +153,22 @@ CreateThread(function()
                     else
                         local forwardVector, rightVector, upVector, position = GetEntityMatrix(CURRENT_ENTITY)
                         local propCoords = dragCoords - (upVector * (maximum.z - minimum.z) * 0.4)
+                        currentEntity.zOffset = GetEntityCoords(CURRENT_ENTITY).z - coords.z
                         SetEntityCoordsNoOffset(CURRENT_ENTITY, propCoords.x, propCoords.y, propCoords.z)
                         if not IsDisabledControlPressed(0, 24) then
-                            local dragCoords = coords + (rightVector * lerp(-0.85, 0.85, screenX))
                             CURRENT_ENTITY = nil
                         end
                     end
+                end
+            end
+            for k,v in pairs(ENTITIES) do
+                if CURRENT_ENTITY ~= k and v.zOffset > 0.0 then
+                    v.zOffset = v.zOffset - 0.015
+                    if v.zOffset <= 0.0 then
+                        v.zOffset = 0.0
+                        SetEntityRotation(k, 0.0, 0.0, heading, 2, true)
+                    end
+                    SetEntityCoordsNoOffset(k, GetEntityCoords(k).x, GetEntityCoords(k).y, coords.z + v.zOffset)
                 end
             end
             Wait(0)
