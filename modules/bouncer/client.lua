@@ -103,7 +103,7 @@ function GetBouncer(id, entityId)
 end
 
 function BouncerThread(id, entityId)
-    local progressPerTick = 0.5
+    local progressPerTick = 1
     local data = GetBouncer(id, entityId)
     if CanEnterClub(id) or PLAYING_BOUNCER_SCENE then return end
     if not data then return end
@@ -113,12 +113,12 @@ function BouncerThread(id, entityId)
             clubId = id,
             entityId = entityId,
             progress = 0,
-            ticks = 0
+            ticks = 20
         }
     end
     if ClosestBouncer.ticks <= 0 then
         ClosestBouncer.visible = HasEntityClearLosToEntityInFront(data.bouncer.ped, PlayerPedId())
-        ClosestBouncer.ticks = 100
+        ClosestBouncer.ticks = 20
     end
     ClosestBouncer.ticks = ClosestBouncer.ticks - 1
     if ClosestBouncer.visible then

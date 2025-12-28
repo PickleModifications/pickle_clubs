@@ -59,9 +59,9 @@ CreateThread(function()
             RegisterBouncer(id, entityId)
         end,
         onRender = function(id, entityId, source)
-            SetTimeout(1000, function()
-                ThrowOutPlayer(source, id)
-            end)
+            -- SetTimeout(1000, function()
+            --     ThrowOutPlayer(source, id)
+            -- end)
         end,
         onUnrender = function(id, entityId, source)
         end,
