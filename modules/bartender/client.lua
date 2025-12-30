@@ -6,6 +6,60 @@ function lerp(a, b, t)
     return a + (b - a) * t
 end
 
+-- Calculate pour rate based on pitch (tilt angle)
+-- Returns a multiplier from 0.0 to 1.0 based on how much the entity is tilted
+function CalculatePourRate(pitch)
+    -- Pitch is in degrees, where:
+    -- 0-90: upright to slightly tilted
+    -- 90-180: tilted, pouring starts
+    -- 180: fully inverted (maximum pour)
+    -- 180-270: tilted back
+    -- 270-360: back to upright
+    
+    -- Normalize pitch to 0-360 range
+    pitch = (pitch % 360 + 360) % 360
+    
+    -- Check if entity is tilted enough to pour (between 90 and 270 degrees)
+    if pitch > 90.0 and pitch < 270.0 then
+        -- Calculate how far from 90/270 we are
+        -- Closer to 180 = more tilt = faster pour
+        local normalizedPitch = 0.0
+        if pitch <= 180.0 then
+            -- Between 90 and 180: normalize from 0 to 1
+            normalizedPitch = (pitch - 90.0) / 90.0
+        else
+            -- Between 180 and 270: normalize from 1 to 0 (mirrored)
+            normalizedPitch = (270.0 - pitch) / 90.0
+        end
+        
+        -- Apply a curve to make it feel more natural (ease-in)
+        -- At 90/270: rate = 0.0 (barely pouring)
+        -- At 180: rate = 1.0 (maximum pour)
+        local rate = normalizedPitch * normalizedPitch -- Quadratic curve for smoother feel
+        
+        -- Ensure minimum pour rate when tilted (so it still pours a little)
+        return math.max(0.1, rate)
+    end
+    
+    -- Not tilted enough to pour
+    return 0.0
+end
+
+-- Draw 3D text at a world position
+function DrawText3D(x, y, z, text)
+    local success, screenX, screenY = World3dToScreen2d(x, y, z)
+    if success then
+        SetTextScale(0.35, 0.35)
+        SetTextFont(4)
+        SetTextProportional(1)
+        SetTextColour(255, 255, 255, 255)
+        SetTextOutline()
+        SetTextEntry("STRING")
+        AddTextComponentString(text)
+        DrawText(screenX, screenY)
+    end
+end
+
 -- Calculate the final color from ALL flavor weights in the drink
 -- flavorWeights format: {1 = 0.01, 2 = 0.02, 3 = 0.03} where keys are flavor indexes
 function CalculateColorFromFlavors(flavorWeights)
@@ -374,7 +428,15 @@ CreateThread(function()
                 end
                 local childEntity = closestChild and ENTITIES[closestChild.entity] or nil
                 if closestChild and (childEntity.type == "drink") and currentEntity.progress > 0.0 and childEntity.progress < 1.0 then
-                    if not currentEntity.ptfx then
+                    if not currentEntity.ptfx or currentEntity.refreshTime < GetGameTimer() then
+                        currentEntity.refreshTime = GetGameTimer() + 2000
+                        if currentEntity.ptfx then
+                            local ptfxHandle = currentEntity.ptfx
+                            SetTimeout(300, function()
+                                StopParticleFxLooped(ptfxHandle, false)
+                                RemoveParticleFx(ptfxHandle, true)
+                            end)
+                        end
                         RequestNamedPtfxAsset("cut_family1")
                         while not HasNamedPtfxAssetLoaded("cut_family1") do
                             Wait(0)
@@ -383,10 +445,27 @@ CreateThread(function()
                         currentEntity.ptfx = StartParticleFxLoopedOnEntity("cs_fam1_bourbon_pour", CURRENT_ENTITY, 0.0, 0.0, 0.285, 0.0, 0.0, 0.0, 0.5, false, false, false)
                         SetParticleFxLoopedColour(currentEntity.ptfx, 255, 0, 0, 255)
                     end
-                    ENTITIES[CURRENT_ENTITY].progress = currentEntity.progress
+                    -- -- Decrease bottle's progress when pouring (based on pitch)
+                    -- if currentEntity.progress > 0.0 then
+                    --     local pourRate = CalculatePourRate(pitch)
+                    --     local basePourAmount = 0.005 -- Maximum pour amount
+                    --     local pourAmount = basePourAmount * pourRate
+                    --     currentEntity.progress = currentEntity.progress - pourAmount
+                    --     if currentEntity.progress < 0.0 then
+                    --         currentEntity.progress = 0.0
+                    --     end
+                    --     if currentEntity.ptfx then
+                    --         local scale = 0.5 * pourRate
+                    --         SetParticleFxLoopedScale(currentEntity.ptfx, scale)
+                    --     end
+                    -- end
+                    -- ENTITIES[CURRENT_ENTITY].progress = currentEntity.progress
                     if (childEntity.type == "drink") and childEntity.progress < 1.0 then
                         local oldProgress = childEntity.progress
-                        local pourAmount = 0.005
+                        -- Calculate pour rate based on pitch (how much the bottle is tilted)
+                        local pourRate = CalculatePourRate(pitch)
+                        local basePourAmount = 0.005 -- Maximum pour amount
+                        local pourAmount = basePourAmount * pourRate
                         childEntity.progress = childEntity.progress + pourAmount
                         ENTITIES[closestChild.entity].progress = childEntity.progress
                         
@@ -423,6 +502,10 @@ CreateThread(function()
                     RemoveParticleFx(currentEntity.ptfx, true)
                     currentEntity.ptfx = nil
                 end
+            elseif currentEntity.ptfx then
+                StopParticleFxLooped(currentEntity.ptfx, false)
+                RemoveParticleFx(currentEntity.ptfx, true)
+                currentEntity.ptfx = nil
             end
         end,
         unSelected = function(entity, data)
@@ -442,7 +525,7 @@ CreateThread(function()
             SetEntityHeading(drink, heading)
             return drink, {
                 progress = params.progress or 0.0,
-                flavorWeights = {}, -- Track proportion of each flavor: {1 = 0.01, 2 = 0.02, ...}
+                flavorWeights = params.flavorWeights or {}, -- Track proportion of each flavor: {1 = 0.01, 2 = 0.02, ...}
             }
         end,
         entityThread = function(entity, data)
@@ -465,13 +548,47 @@ CreateThread(function()
                 DrawMarker(1, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(28, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, color[1], color[2], color[3], alpha, false, false, 2)
             end
+            
+            -- Draw flavor percentages above the drink
+            local flavorWeights = ENTITIES[entity].flavorWeights
+            if flavorWeights and next(flavorWeights) ~= nil then
+                local textY = position.z + 0.15 -- Start above the drink
+                local textLines = {}
+                
+                -- Collect all flavors with their percentages
+                for flavorIndex, weight in pairs(flavorWeights) do
+                    if weight > 0.001 then -- Only show flavors with significant amount
+                        local flavor = Config.Bartender.flavors[flavorIndex]
+                        local percentage = math.floor(weight * 100 + 0.5) -- Round to nearest integer
+                        if flavor then
+                            local label = flavor.label or ("Flavor " .. flavorIndex)
+                            table.insert(textLines, {index = flavorIndex, text = label .. ": " .. percentage .. "%", weight = weight})
+                        else
+                            table.insert(textLines, {index = flavorIndex, text = "Flavor " .. flavorIndex .. ": " .. percentage .. "%", weight = weight})
+                        end
+                    end
+                end
+                
+                -- Sort by weight (descending) so most prominent flavors are shown first
+                table.sort(textLines, function(a, b) return a.weight > b.weight end)
+                
+                -- Draw each line
+                for i, lineData in ipairs(textLines) do
+                    local textCoords = position + (upVector * (0.15 + (i - 1) * 0.03))
+                    DrawText3D(textCoords.x, textCoords.y, textCoords.z, lineData.text)
+                end
+            end
         end,
         selectedThread = function(entity, data)
             local pitch = data.pitch
             local currentEntity = ENTITIES[entity]
             local minimum, maximum = data.minimum, data.maximum
             if math.abs(pitch) > 90.0 and math.abs(pitch) < 270.0 and currentEntity.progress > 0.0 then
-                currentEntity.progress = currentEntity.progress - 0.005
+                -- Calculate pour rate based on pitch (how much the drink is tilted)
+                local pourRate = CalculatePourRate(pitch)
+                local basePourAmount = 0.005 -- Maximum pour amount
+                local pourAmount = basePourAmount * pourRate
+                currentEntity.progress = currentEntity.progress - pourAmount
                 -- Ensure progress doesn't go below 0
                 if currentEntity.progress <= 0.0 then
                     currentEntity.progress = 0.0
@@ -479,7 +596,15 @@ CreateThread(function()
                     currentEntity.flavorWeights = {}
                     ENTITIES[entity].flavorWeights = {}
                 end
-                if not currentEntity.ptfx then
+                if not currentEntity.ptfx or currentEntity.refreshTime < GetGameTimer() then
+                    currentEntity.refreshTime = GetGameTimer() + 2000
+                    if currentEntity.ptfx then
+                        local ptfxHandle = currentEntity.ptfx
+                        SetTimeout(300, function()
+                            StopParticleFxLooped(ptfxHandle, false)
+                            RemoveParticleFx(ptfxHandle, true)
+                        end)
+                    end
                     RequestNamedPtfxAsset("cut_family1")
                     while not HasNamedPtfxAssetLoaded("cut_family1") do
                         Wait(0)
@@ -487,6 +612,10 @@ CreateThread(function()
                     UseParticleFxAssetNextCall("cut_family1")
                     currentEntity.ptfx = StartParticleFxLoopedOnEntity("cs_fam1_bourbon_pour", CURRENT_ENTITY, 0.0, 0.0, 0.285, 0.0, 0.0, 0.0, 2.5, false, false, false)
                     SetParticleFxLoopedColour(currentEntity.ptfx, 255, 0, 0, 255)
+                else
+                    local scale = 4 * pourRate
+                    SetParticleFxLoopedScale(currentEntity.ptfx, scale)
+                    SetParticleFxLoopedOffsets(currentEntity.ptfx, (0.045 * (pourRate + -1)) * (math.abs(pitch) < 180 and -1 or 1), 0.0, 0.285 + (0.05 * (pourRate + -1)), 0.0, 0.0, 0.0)
                 end
             elseif currentEntity.ptfx then
                 StopParticleFxLooped(currentEntity.ptfx, false)
@@ -505,7 +634,10 @@ CreateThread(function()
         end,
     })
     CreateInteractiveEntity("drink", coords + (rightVector * -0.5), heading, {
-        progress = 0.0,
+        progress = 1.0,
+        flavorWeights = {
+            [1] = 1.0,
+        },
     })
     for i=1, #Config.Bartender.flavors do
         local flavor = Config.Bartender.flavors[i]
