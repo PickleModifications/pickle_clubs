@@ -32,6 +32,23 @@ Config.FrameworkSettings = {
     end
 }
 
+Config.Bartender = {
+    flavors = {
+        {
+            label = "Strawberry",
+            color = {255, 0, 0},
+        },
+        {
+            label = "Lime",
+            color = {0, 255, 0},
+        },
+        {
+            label = "Blueberry",
+            color = {0, 0, 255},
+        },
+    }
+}
+
 Config.Peds = {
     ["bouncer_1"] = {
         model = "s_m_m_bouncer_01",
