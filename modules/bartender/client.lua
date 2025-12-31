@@ -633,6 +633,15 @@ CreateThread(function()
             end
         end,
     })
+    RegisterInteractiveEntity("coaster", {
+        init = function(coords, heading, data, params)
+            local coaster = CreateProp(`npds_coaster_round_01`, coords.x, coords.y, coords.z + 0.3, false, false, false)
+            SetEntityCollision(coaster, true, true)
+            SetEntityHeading(coaster, heading)
+            return coaster, {}
+        end,
+    })
+    CreateInteractiveEntity("coaster", coords + (rightVector * -0.5), heading, {})
     CreateInteractiveEntity("drink", coords + (rightVector * -0.5), heading, {
         progress = 1.0,
         flavorWeights = {
