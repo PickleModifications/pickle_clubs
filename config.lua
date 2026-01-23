@@ -19,7 +19,7 @@ Config.AdminGroups = {
     "superadmin",
 }
 Config.TargetIcons = {
-    dj = "fas fa-shield-alt",
+    bartender = "fas fa-cocktail",
 }
 Config.FrameworkSettings = {
     dirtyMoney = "DEFAULT",
@@ -33,6 +33,7 @@ Config.FrameworkSettings = {
 }
 
 Config.Bartender = {
+    mixThreshold = 0.25, -- This is the minimum requirement of a secondary flavor to be considered for a mixed drink.
     flavors = {
         {
             label = "Strawberry",
@@ -46,7 +47,47 @@ Config.Bartender = {
             label = "Blueberry",
             color = {0, 0, 255},
         },
-    }
+    },
+    orderSpawnOffset = -2.0, -- Distance along forwardVector to spawn NPCs (negative = behind bar)
+    orderQueueSpacing = 0.8, -- Spacing between NPCs in queue (along rightVector)
+    orderTimerDuration = 60, -- Order timeout in seconds
+    maxActiveOrders = 3, -- Maximum simultaneous orders
+    orderNPCs = {
+        "s_m_y_bartender_01",
+        "a_f_y_business_01",
+        "a_m_y_business_01",
+        "a_f_y_business_02",
+        "a_m_y_business_02",
+        "a_f_y_business_03",
+        "a_m_y_business_03",
+        "s_f_y_bartender_01",
+    },
+    orderSpawnInterval = 10, -- Time between new orders in seconds
+    orderPayment = 50, -- Payment amount for correct order
+    orderConversations = {
+        correct = {
+            "Perfect! This is exactly what I ordered!",
+            "Thanks! This is great!",
+            "Exactly what I wanted!",
+            "Perfect drink, thank you!",
+        },
+        incorrect = {
+            "This isn't what I ordered...",
+            "Hmm, this doesn't taste right.",
+            "I think you made the wrong drink.",
+            "This isn't what I asked for.",
+        },
+    },
+    Stations = {
+        defaultBlip = {
+            name = "Bartending Station",
+            color = 5,
+            sprite = 52,
+            scale = 0.8,
+            visible = true,
+        },
+        registerModel = `vw_prop_casino_till`, -- Model for gizmo placement
+    },
 }
 
 Config.Peds = {

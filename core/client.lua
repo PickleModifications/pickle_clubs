@@ -222,7 +222,7 @@ function CreateInteraction(data, selected)
         radius = data.radius or 1.0,
         interactRadius = data.interactRadius or Config.InteractDistance,
         distance = data.distance or Config.InteractDistance,
-        rotation = data.rotation or vector3(0.0, 0.0, data.heading),
+        rotation = data.rotation or vector3(0.0, 0.0, data.heading or 0.0),
         vehicleInteract = data.vehicleInteract,
         hiddenKeypress = data.hiddenKeypress
     }

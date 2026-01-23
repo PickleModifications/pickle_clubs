@@ -1,10 +1,10 @@
-local ENTITIES = {}
-local InteractiveEntityTypes = {}
-local CURRENT_ENTITY = nil
-
-function lerp(a, b, t)
-    return a + (b - a) * t
-end
+-- NPC Ordering System (Multi-Station)
+OrderNPCs = {} -- stationId -> {orderId -> npcData}
+CurrentOrders = {} -- stationId -> orderData
+BartenderServiceActive = {} -- stationId -> boolean
+SubmittedDrinks = {} -- Track which drinks have been submitted
+LoadedStations = {} -- stationId -> station data
+StationInteractions = {} -- stationId -> interactionIndex
 
 -- Calculate pour rate based on pitch (tilt angle)
 -- Returns a multiplier from 0.0 to 1.0 based on how much the entity is tilted
@@ -43,21 +43,6 @@ function CalculatePourRate(pitch)
     
     -- Not tilted enough to pour
     return 0.0
-end
-
--- Draw 3D text at a world position
-function DrawText3D(x, y, z, text)
-    local success, screenX, screenY = World3dToScreen2d(x, y, z)
-    if success then
-        SetTextScale(0.35, 0.35)
-        SetTextFont(4)
-        SetTextProportional(1)
-        SetTextColour(255, 255, 255, 255)
-        SetTextOutline()
-        SetTextEntry("STRING")
-        AddTextComponentString(text)
-        DrawText(screenX, screenY)
-    end
 end
 
 -- Calculate the final color from ALL flavor weights in the drink
@@ -304,75 +289,757 @@ function MixColors(color1, color2, weight1, weight2)
     return {r, g, b}
 end
 
-function InteractiveEntityThread(entity, data)
-    local currentEntity = ENTITIES[entity]
-    if not currentEntity then return end
-    local entType = InteractiveEntityTypes[currentEntity.type]
-    if not entType then return end
-    if entType.entityThread then
-        entType.entityThread(entity, data)
-    end
-end
-
-function SelectedInteractiveEntityThread(entity, data)
-    local currentEntity = ENTITIES[entity]
-    if not currentEntity then return end
-    local entType = InteractiveEntityTypes[currentEntity.type]
-    if not entType then return end
-    if entType.selectedThread then
-        entType.selectedThread(entity, data)
-    end
-end
-
-function UnselectedInteractiveEntity(entity, data)
-    local currentEntity = ENTITIES[entity]
-    if not currentEntity then return end
-    local entType = InteractiveEntityTypes[currentEntity.type]
-    if not entType then return end
-    if entType.unSelected then
-        entType.unSelected(entity, data)
-    end
-end
-
-function RegisterInteractiveEntity(entType, data)
-    InteractiveEntityTypes[entType] = data
-end
-
-function CreateInteractiveEntity(entType, coords, heading, params)
-    -- local entity = CreateEntity(entType, coords, heading, data)
-    -- ENTITIES[entity] = data
-    if not InteractiveEntityTypes[entType] then return print("^1ERROR: No interactive entity type found for: ", entType) end
-    local entityData = {
-        type = entType,
-        zOffset = 0.01,
+function CreateScriptedCamera()
+    if CurrentCamera then ExitScriptedCamera() end
+    local initialCamSettings = {
+        coords = GetGameplayCamCoord(),
+        rotation = GetGameplayCamRot(),
+        fov = GetGameplayCamFov(),
     }
-    local entity = nil
-    local newData = {}
-    if InteractiveEntityTypes[entType].init then
-        entity, newData = InteractiveEntityTypes[entType].init(coords, heading, entityData, params)
-    end
-    if not entity then return print("^1ERROR: No entity created for: ", entType) end
-    for k,v in pairs(newData or {}) do
-        entityData[k] = v
-    end
-    ENTITIES[entity] = entityData
-    print("^2Created interactive entity: ", entType, json.encode(entityData, {indent = true}))
-    return entity
+    CurrentCamera = CreateCamWithParams("DEFAULT_SCRIPTED_CAMERA", 
+        initialCamSettings.coords.x, initialCamSettings.coords.y, initialCamSettings.coords.z, 
+        initialCamSettings.rotation.x, initialCamSettings.rotation.y, initialCamSettings.rotation.z, initialCamSettings.fov
+    )
+    SetCamActive(CurrentCamera, true)
+    RenderScriptCams(true, false, 0, true, true)
 end
 
-CreateThread(function()
-    local coords = vector3(128.0734, -1283.1941, 29.2905)
-    local heading = 119.4825
-    local temp = CreateTennisBall(coords.x, coords.y, coords.z)
-    SetEntityRotation(temp, 0.0, 0.0, heading, 2, true)
+function ExitScriptedCamera(durationValue)
+    local duration = durationValue
+    if duration == nil then duration = 2000 end
+    ClearFocus()
+	DestroyAllCams()
+    RenderScriptCams(false, true, duration, true, false) 
+end
+
+function SpawnOrderNPC(orderData)
+    if not orderData or not orderData.stationId or not orderData.spawnCoords or not orderData.walkCoords then
+        print("^1ERROR: Invalid order data for NPC spawn")
+        return
+    end
+    
+    local stationId = orderData.stationId
+    
+    -- Initialize station NPC tracking if needed
+    if not OrderNPCs[stationId] then
+        OrderNPCs[stationId] = {}
+    end
+    
+    -- Request model
+    local modelHash = GetHashKey(orderData.npcModel)
+    if not IsModelInCdimage(modelHash) then
+        modelHash = `a_m_m_skater_01` -- Fallback
+    end
+    
+    RequestModel(modelHash)
+    while not HasModelLoaded(modelHash) do
+        Wait(0)
+    end
+    
+    -- Spawn NPC at queue position (not spawn position)
+    local npc = CreateNPC(modelHash, orderData.walkCoords.x, orderData.walkCoords.y, orderData.walkCoords.z, orderData.heading or 0.0, false, true)
+    SetEntityInvincible(npc, true)
+    SetBlockingOfNonTemporaryEvents(npc, true)
+    SetEntityAsMissionEntity(npc, true, true)
+    
+    -- Freeze NPC in place
+    FreezeEntityPosition(npc, true)
+    
+    -- Face the interaction (flip heading 180 degrees to face towards interaction)
+    if orderData.heading then
+        local facingHeading = (orderData.heading + 180.0) % 360.0
+        SetEntityHeading(npc, facingHeading)
+    end
+    
+    -- Store NPC data per station
+    OrderNPCs[stationId][orderData.orderId] = {
+        npc = npc,
+        orderId = orderData.orderId,
+        stationId = stationId,
+        drinkName = orderData.drinkName,
+        queueIndex = orderData.queueIndex or 0,
+        isWalking = false, -- Track if NPC is currently walking to queue position
+    }
+    
+    SetModelAsNoLongerNeeded(modelHash)
+end
+
+function UpdateQueuePositions(stationId, heading, queueData)
+    if not CURRENT_INTERACTION or CURRENT_INTERACTION.stationId ~= stationId then return end
+    if not OrderNPCs[stationId] then return end
+    
+    local npcsToWalk = {} -- Track NPCs that need to walk
+    
+    -- Update queue indices from server data
+    if queueData then
+        for orderId, queueIndex in pairs(queueData) do
+            if OrderNPCs[stationId][orderId] then
+                local oldIndex = OrderNPCs[stationId][orderId].queueIndex or 0
+                OrderNPCs[stationId][orderId].queueIndex = queueIndex
+                
+                -- If queue index changed and NPC exists, mark for walking
+                if oldIndex ~= queueIndex and DoesEntityExist(OrderNPCs[stationId][orderId].npc) then
+                    table.insert(npcsToWalk, {orderId = orderId, queueIndex = queueIndex})
+                end
+            end
+        end
+    end
+    
+    -- Make NPCs walk to their new positions
+    for i = 1, #npcsToWalk do
+        local data = npcsToWalk[i]
+        if OrderNPCs[stationId][data.orderId] then
+            WalkNPCToQueuePosition(stationId, OrderNPCs[stationId][data.orderId].npc, data.orderId, data.queueIndex, heading)
+        end
+    end
+    
+    -- Recalculate and correct positions for all NPCs that haven't moved (queue index unchanged and not walking)
+    -- Only update NPCs that are still in the queue (present in queueData)
+    if queueData then
+        local forwardVector = CalculateForwardVector(CURRENT_INTERACTION.heading)
+        local rightVector = vector3(math.cos(math.rad(CURRENT_INTERACTION.heading + 90)), math.sin(math.rad(CURRENT_INTERACTION.heading + 90)), 0.0)
+        
+        for orderId, queueIndex in pairs(queueData) do
+            local npcData = OrderNPCs[stationId][orderId]
+            if npcData and DoesEntityExist(npcData.npc) then
+                -- Only update if not currently walking (queue index didn't change)
+                if not npcData.isWalking then
+                    local basePos = CURRENT_INTERACTION.coords + (forwardVector * -1.5) + vector3(0.0, 0.0, -1.0)
+                    if queueIndex > 0 then
+                        basePos = basePos + (rightVector * (Config.Bartender.orderQueueSpacing * queueIndex))
+                    end
+                    
+                    -- Update NPC position and heading (flip heading 180 degrees to face towards interaction)
+                    SetEntityCoords(npcData.npc, basePos.x, basePos.y, basePos.z)
+                    SetEntityHeading(npcData.npc, CURRENT_INTERACTION.heading)
+                    FreezeEntityPosition(npcData.npc, true)
+                end
+            end
+        end
+    end
+end
+
+function WalkNPCToQueuePosition(stationId, npc, orderId, queueIndex, heading)
+    if not CURRENT_INTERACTION or CURRENT_INTERACTION.stationId ~= stationId then return end
+    if not DoesEntityExist(npc) or not OrderNPCs[stationId] or not OrderNPCs[stationId][orderId] then return end
+    
+    -- Unfreeze NPC to allow walking
+    FreezeEntityPosition(npc, false)
+    OrderNPCs[stationId][orderId].isWalking = true
+    
+    -- Calculate target position
+    local forwardVector = CalculateForwardVector(CURRENT_INTERACTION.heading)
+    local rightVector = vector3(math.cos(math.rad(CURRENT_INTERACTION.heading + 90)), math.sin(math.rad(CURRENT_INTERACTION.heading + 90)), 0.0)
+    local basePos = CURRENT_INTERACTION.coords + (forwardVector * -1.5)
+    if queueIndex > 0 then
+        basePos = basePos + (rightVector * (Config.Bartender.orderQueueSpacing * queueIndex))
+    end
+    
+    -- Make NPC walk to position
+    TaskGoStraightToCoord(npc, basePos.x, basePos.y, basePos.z, 1.0, -1, 0.0, 0.0)
+    
+    -- Monitor when NPC reaches destination
+    CreateThread(function()
+        while DoesEntityExist(npc) and OrderNPCs[stationId] and OrderNPCs[stationId][orderId] and OrderNPCs[stationId][orderId].isWalking do
+            Wait(500)
+            local npcCoords = GetEntityCoords(npc)
+            local distance = #(npcCoords - basePos)
+            if distance < 0.25 then
+                -- NPC reached destination, correct position and freeze
+                ClearPedTasks(npc)
+                SetEntityCoords(npc, basePos.x, basePos.y, basePos.z - 1.0)
+                SetEntityHeading(npc, (CURRENT_INTERACTION.heading + 180.0) % 360.0)
+                FreezeEntityPosition(npc, true)
+                OrderNPCs[stationId][orderId].isWalking = false
+                break
+            end
+        end
+    end)
+end
+
+function DeleteOrderNPC(stationId, orderId)
+    if not OrderNPCs[stationId] or not OrderNPCs[stationId][orderId] then return end
+    
+    local npc = OrderNPCs[stationId][orderId].npc
+    if DoesEntityExist(npc) then
+        -- Make NPC walk away before deleting
+        if CURRENT_INTERACTION and CURRENT_INTERACTION.stationId == stationId then
+            MakeNPCWalkAway(npc, CURRENT_INTERACTION.coords, CURRENT_INTERACTION.heading)
+            
+            -- Delete after walking to the right
+            SetTimeout(2000, function()
+                if DoesEntityExist(npc) then
+                    DeleteEntity(npc)
+                end
+            end)
+        else
+            DeleteEntity(npc)
+        end
+    end
+    
+    OrderNPCs[stationId][orderId] = nil
+end
+
+function DeleteAllOrderNPCs(stationId)
+    if not stationId then
+        -- Delete all NPCs for all stations
+        for sid, stationNPCs in pairs(OrderNPCs) do
+            DeleteAllOrderNPCs(sid)
+        end
+        return
+    end
+    
+    if not OrderNPCs[stationId] then return end
+    
+    -- Store NPCs to delete (in case OrderNPCs gets cleared)
+    local npcsToDelete = {}
+    for orderId, npcData in pairs(OrderNPCs[stationId]) do
+        if DoesEntityExist(npcData.npc) then
+            table.insert(npcsToDelete, npcData.npc)
+        end
+    end
+    
+    -- Clear the OrderNPCs table for this station
+    OrderNPCs[stationId] = nil
+    CurrentOrders[stationId] = nil
+    BartenderServiceActive[stationId] = false
+    
+    if not CURRENT_INTERACTION or CURRENT_INTERACTION.stationId ~= stationId then
+        -- If no interaction data, delete immediately
+        for i = 1, #npcsToDelete do
+            if DoesEntityExist(npcsToDelete[i]) then
+                DeleteEntity(npcsToDelete[i])
+            end
+        end
+        return
+    end
+    
+    -- Make all NPCs walk away to the right
+    for i = 1, #npcsToDelete do
+        local npc = npcsToDelete[i]
+        if DoesEntityExist(npc) then
+            MakeNPCWalkAway(npc, CURRENT_INTERACTION.coords, CURRENT_INTERACTION.heading)
+        end
+    end
+    
+    -- Delete all NPCs after they've walked to the right
+    SetTimeout(3000, function()
+        for i = 1, #npcsToDelete do
+            if DoesEntityExist(npcsToDelete[i]) then
+                DeleteEntity(npcsToDelete[i])
+            end
+        end
+    end)
+end
+
+function CalculateForwardVector(heading)
+    local headingRad = math.rad(heading)
+    local forwardX = math.sin(headingRad)
+    local forwardY = -math.cos(headingRad)
+    local forwardZ = 0.0
+    return vector3(forwardX, forwardY, forwardZ)
+end
+
+function CalculateRightVector(heading)
+    local headingRad = math.rad(heading)
+    local rightX = math.cos(headingRad)
+    local rightY = math.sin(headingRad)
+    local rightZ = 0.0
+    return vector3(rightX, rightY, rightZ)
+end
+
+-- Make NPC walk away: walk to the right, then delete
+function MakeNPCWalkAway(npc, stationCoords, heading)
+    if not DoesEntityExist(npc) then return end
+    
+    -- Unfreeze before walking away
+    FreezeEntityPosition(npc, false)
+    -- Stop any current tasks
+    ClearPedTasks(npc)
+    
+    local rightVector = CalculateRightVector(heading)
+    
+    -- Walk to the right (2-3 steps to clear the queue area)
+    local rightCoords = GetEntityCoords(npc) + (rightVector * 2.5)
+    
+    -- Walk to the right
+    TaskGoStraightToCoord(npc, rightCoords.x, rightCoords.y, rightCoords.z, 1.0, 3000, 0.0, 0.0)
+end
+
+-- Events
+RegisterNetEvent("pickle_clubs:spawnOrderNPC", function(orderData)
+    SpawnOrderNPC(orderData)
+end)
+
+RegisterNetEvent("pickle_clubs:updateQueuePositions", function(stationId, heading, queueData)
+    UpdateQueuePositions(stationId, heading, queueData)
+end)
+
+RegisterNetEvent("pickle_clubs:updateOrder", function(orderData)
+    if orderData.stationId then
+        CurrentOrders[orderData.stationId] = orderData
+        -- Send to NUI only if this is the current station
+        if CURRENT_INTERACTION and CURRENT_INTERACTION.stationId == orderData.stationId then
+            SendNUIMessage({
+                type = "updateOrderDisplay",
+                data = orderData
+            })
+        end
+    end
+end)
+
+RegisterNetEvent("pickle_clubs:deleteOrderNPC", function(stationId, orderId)
+    DeleteOrderNPC(stationId, orderId)
+end)
+
+RegisterNetEvent("pickle_clubs:cleanupAllOrders", function(stationId)
+    DeleteAllOrderNPCs(stationId)
+    if stationId then
+        BartenderServiceActive[stationId] = false
+    else
+        BartenderServiceActive = {}
+    end
+    SubmittedDrinks = {}
+end)
+
+function CheckDrinkOnCoaster(drinkEntity)
+    if not INT_ENTITIES[drinkEntity] then return end
+    if SubmittedDrinks[drinkEntity] then return end -- Already submitted
+    
+    local drinkData = INT_ENTITIES[drinkEntity]
+    if not drinkData or drinkData.progress < 1.0 then return end -- Drink must be full
+    
+    local drinkCoords = GetEntityCoords(drinkEntity)
+    local closestCoaster = nil
+    local closestDistance = 999.0
+    
+    -- Find closest coaster
+    for entity, data in pairs(INT_ENTITIES) do
+        if data and data.type == "coaster" then
+            local coasterCoords = GetEntityCoords(entity)
+            local distance = #(drinkCoords - coasterCoords)
+            if distance < closestDistance and distance < 0.045 then -- Within 0.2 units
+                closestDistance = distance
+                closestCoaster = entity
+            end
+        end
+    end
+    
+    if closestCoaster and CURRENT_INTERACTION and CURRENT_INTERACTION.stationId then
+        local stationId = CURRENT_INTERACTION.stationId
+        
+        -- Find the current order (first in queue - queueIndex 0) for this station
+        local currentOrderId = nil
+        if OrderNPCs[stationId] then
+            for orderId, npcData in pairs(OrderNPCs[stationId]) do
+                if npcData and npcData.queueIndex == 0 then
+                    currentOrderId = orderId
+                    break
+                end
+            end
+        end
+        
+        if currentOrderId then
+            -- Check if drink is near the current order NPC
+            local npcData = OrderNPCs[stationId][currentOrderId]
+            if npcData and DoesEntityExist(npcData.npc) then
+                local npcCoords = GetEntityCoords(npcData.npc)
+                local distance = #(drinkCoords - npcCoords)
+                
+                if distance < 2.0 then -- Within 2 units of current order NPC
+                    -- Submit drink
+                    if drinkData.flavorWeights then
+                        SubmittedDrinks[drinkEntity] = true
+                        TriggerServerEvent("pickle_clubs:submitDrink", stationId, currentOrderId, drinkData.flavorWeights)
+                        INT_ENTITIES[drinkEntity].progress = 0.0
+                        INT_ENTITIES[drinkEntity].flavorWeights = {}
+                        SetTimeout(1000, function() 
+                            SubmittedDrinks[drinkEntity] = nil
+                        end)
+                    end
+                end
+            end
+        end
+    end
+end
+
+RegisterNetEvent("pickle_clubs:drinkSubmissionResult", function(success, feedback, payment)
+    if success then
+        ShowNotification("^2" .. feedback)
+        if payment then
+            ShowNotification("^2You received $" .. payment)
+        end
+    else
+        ShowNotification("^1" .. feedback)
+    end
+end)
+
+function OpenBartenderRegister()
+    if not CURRENT_INTERACTION or not CURRENT_INTERACTION.stationId then
+        ShowNotification("^1ERROR: No active station interaction")
+        return
+    end
+    
+    local stationId = CURRENT_INTERACTION.stationId
+    local options = {}
+    
+    if not BartenderServiceActive[stationId] then
+        table.insert(options, {
+            title = _L("bartender_start_service"),
+            description = "Start accepting NPC orders",
+            onSelect = function()
+                if not CURRENT_INTERACTION or not CURRENT_INTERACTION.stationId then
+                    ShowNotification("^1ERROR: No active interaction")
+                    return
+                end
+                -- Trigger server event with stationId
+                TriggerServerEvent("pickle_clubs:startBartenderService", stationId, CURRENT_INTERACTION.coords, CURRENT_INTERACTION.heading)
+                BartenderServiceActive[stationId] = true
+                ShowNotification("^2Bartender service started")
+            end
+        })
+    else
+        table.insert(options, {
+            title = _L("bartender_stop_service"),
+            description = "Stop accepting NPC orders",
+            onSelect = function()
+                TriggerServerEvent("pickle_clubs:stopBartenderService", stationId)
+                BartenderServiceActive[stationId] = false
+                ShowNotification("^2Bartender service stopped")
+            end
+        })
+    end
+    
+    lib.registerContext({
+        id = "bartender_register",
+        title = _L("bartender_cash_register"),
+        options = options
+    })
+    lib.showContext("bartender_register")
+end
+
+-- Store interaction indices for stations
+StationInteractions = {} -- stationId -> interactionIndex
+
+-- Load station and create interaction
+function LoadStation(station)
+    if not station then return end
+    
+    -- Ensure coords is vector3 (may come as table from network sync)
+    if station.coords and type(station.coords) == "table" then
+        station.coords = vector3(station.coords.x or station.coords[1], station.coords.y or station.coords[2], station.coords.z or station.coords[3])
+    end
+    
+    LoadedStations[station.id] = station
+    
+    -- Wait for management module to create entities, then create interaction
+    CreateThread(function()
+        Wait(1000) -- Wait for management module to create entities
+        
+        -- Ensure coords is still vector3
+        local coords = station.coords
+        
+        -- Try to get register entity from management module
+        local registerEntity = GetStationEntity(station.id)
+        if registerEntity and DoesEntityExist(registerEntity) then
+            -- Create interaction using CreateInteraction (supports target and E key)
+            -- Use the register entity model as target
+            local registerModel = GetEntityModel(registerEntity)
+            local interactionIndex = CreateInteraction({
+                label = "Bartending Station",
+                icon = Config.TargetIcons.bartender,
+                coords = coords, -- Use the ensured vector3 coords
+                heading = station.heading or 0.0, -- Provide heading to avoid nil error
+                radius = 1.0,
+                interactRadius = Config.InteractDistance,
+            }, function(selection, targetData)
+                -- Selected callback - check if admin first, then show menu or proceed
+                local stationId = station.id
+                
+                -- Use ox_lib callback to securely check admin status
+                lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
+                    if isAdmin then
+                        -- Admin: show menu to choose between manage or bartend
+                        lib.registerContext({
+                            id = "station_interact_" .. stationId,
+                            title = "Station #" .. stationId,
+                            options = {
+                                {
+                                    title = "Manage Station",
+                                    description = "Edit position, configure blip, or delete",
+                                    onSelect = function()
+                                        exports["pickle_clubs"]:OpenStationManagementMenu(stationId)
+                                    end,
+                                },
+                                {
+                                    title = "Start Bartending",
+                                    description = "Begin bartending at this station",
+                                    onSelect = function()
+                                        TriggerEvent("pickle_clubs:startStationInteraction", {stationId = stationId})
+                                    end,
+                                },
+                            },
+                        })
+                        lib.showContext("station_interact_" .. stationId)
+                    else
+                        -- Not admin: proceed directly to bartending
+                        TriggerEvent("pickle_clubs:startStationInteraction", {stationId = stationId})
+                    end
+                end)
+            end)
+            
+            -- Store interaction index for cleanup
+            StationInteractions[station.id] = interactionIndex
+        end
+    end)
+end
+
+-- Start interaction for a station
+RegisterNetEvent("pickle_clubs:startStationInteraction", function(data)
+    local stationId = data and data.stationId or data
+    if not stationId or not LoadedStations[stationId] then 
+        ShowNotification("^1Station not found")
+        return 
+    end
+    
+    local station = LoadedStations[stationId]
+    
+    -- Check if station is already controlled
+    TriggerServerEvent("pickle_clubs:setStationController", stationId, "interaction")
+    
+    -- Wait a moment for server response (if denied, stationControlDenied event will fire)
+    CreateThread(function()
+        Wait(200)
+        -- If we got denied, the event will fire and we won't proceed
+        -- Otherwise, proceed with starting interaction
+        -- Note: Register visibility is handled by server event (pickle_clubs:hideStationRegister)
+        if not CURRENT_INTERACTION then
+            CreateStationInteraction(station)
+        end
+    end)
+end)
+
+
+-- Create interaction entities for a station
+function CreateStationInteraction(station)
+    if CURRENT_INTERACTION then
+        ShowNotification("^1ERROR: Interaction already started")
+        return
+    end
+    local temp = CreateTennisBall(station.coords.x, station.coords.y, station.coords.z)
+    SetEntityRotation(temp, 0.0, 0.0, station.heading, 2, true)
     local forwardVector, rightVector, upVector, position = GetEntityMatrix(temp)
     DeleteEntity(temp)
-    CreateScriptedCamera()
-    local camCoords = coords + (forwardVector * -0.5) + vector3(0.0, 0.0, 0.4)
-    SetCamParams(CurrentCamera, camCoords.x, camCoords.y, camCoords.z,
-        0.0, 0.0, heading, 90.0, 
-        0, 0, 0, 2
-    )
+    -- Ensure coords is vector3
+    local coords = station.coords + (rightVector * 0.5) 
+    if type(coords) == "table" then
+        coords = vector3(coords.x or coords[1], coords.y or coords[2], coords.z or coords[3])
+    end
+    
+    local heading = station.heading
+    local interaction = StartInteraction(coords, heading)
+    
+    -- Add stationId to interaction
+    if interaction then
+        interaction.stationId = station.id
+        CURRENT_INTERACTION.stationId = station.id
+    end
+    
+    -- Create coaster
+    CreateInteractiveEntity("coaster", coords + (interaction.rightVector * -0.15), heading, {})
+    
+    -- Create drink
+    CreateInteractiveEntity("drink", coords + (interaction.rightVector * -0.15), heading, {
+        progress = 1.0,
+        flavorWeights = {
+            [1] = 1.0,
+        },
+        display = {
+            title = _L("bartender_drink"),
+            secondaryTitle = "0%",
+            rows = {
+                {type = "text", label = _L("bartender_empty")}
+            }
+        },
+    })
+    
+    -- Create register
+    CreateInteractiveEntity("register", coords + (interaction.rightVector * -0.5), heading, {
+        display = {
+            title = _L("bartender_cash_register"),
+            hiddenHover = true,
+            rows = {
+                {type = "text", label = _L("bartender_start_stop_orders"), color = "secondary"}
+            }
+        },
+    })
+    
+    -- Create bottles for each flavor
+    for i=1, #Config.Bartender.flavors do
+        local flavor = Config.Bartender.flavors[i]
+        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * (0.85)) + (interaction.rightVector * (-0.1 * i)), heading, {
+            color = flavor.color,
+            flavorIndex = i, -- Store the flavor index
+            progress = 1.0,
+        })
+    end
+end
+
+-- Handle station control denial
+RegisterNetEvent("pickle_clubs:stationControlDenied", function(message)
+    ShowNotification("^1" .. (message or "Station is already in use"))
+end)
+
+-- Load stations when synced
+RegisterNetEvent("pickle_clubs:syncStations", function(stations)
+    -- Cleanup old interactions
+    for stationId, interactionIndex in pairs(StationInteractions) do
+        if not stations[stationId] then
+            DeleteInteraction(interactionIndex)
+            StationInteractions[stationId] = nil
+        end
+    end
+    
+    -- Load new/updated stations
+    for stationId, station in pairs(stations) do
+        -- Ensure coords is vector3 (may come as table from network sync)
+        if station.coords and type(station.coords) == "table" then
+            station.coords = vector3(station.coords.x or station.coords[1], station.coords.y or station.coords[2], station.coords.z or station.coords[3])
+        end
+        
+        -- Only load if not already loaded or if station data changed
+        if not LoadedStations[stationId] or (LoadedStations[stationId].coords and station.coords and LoadedStations[stationId].coords ~= station.coords) then
+            -- Cleanup old interaction if exists
+            if StationInteractions[stationId] then
+                DeleteInteraction(StationInteractions[stationId])
+                StationInteractions[stationId] = nil
+            end
+            LoadStation(station)
+        end
+    end
+    
+    -- Request current controller state to sync register visibility
+    TriggerServerEvent("pickle_clubs:requestStationControllerStates")
+end)
+
+-- Handle station removal
+RegisterNetEvent("pickle_clubs:removeStation", function(stationId)
+    LoadedStations[stationId] = nil
+    
+    -- Delete interaction if it exists
+    if StationInteractions[stationId] then
+        DeleteInteraction(StationInteractions[stationId])
+        StationInteractions[stationId] = nil
+    end
+    
+    -- If currently interacting with this station, stop interaction
+    if CURRENT_INTERACTION and CURRENT_INTERACTION.stationId == stationId then
+        StopInteraction()
+        TriggerServerEvent("pickle_clubs:clearStationController", stationId, "interaction")
+    end
+end)
+
+-- Register visibility is handled by management/client.lua
+-- The server syncs visibility state via events when controllers change
+
+-- Hook into StopInteraction to cleanup all bartender-related state
+-- Note: Register visibility is handled by server event (pickle_clubs:showStationRegister)
+AddEventHandler("pickle_clubs:stopInteraction", function()
+    if CURRENT_INTERACTION and CURRENT_INTERACTION.stationId then
+        local stationId = CURRENT_INTERACTION.stationId
+        
+        -- Stop bartender service if active (this will cleanup NPCs server-side)
+        if BartenderServiceActive[stationId] then
+            TriggerServerEvent("pickle_clubs:stopBartenderService", stationId)
+            BartenderServiceActive[stationId] = false
+        end
+        
+        -- Clear order display in NUI first (before cleanup)
+        SendNUIMessage({
+            type = "updateOrderDisplay",
+            data = {
+                stationId = stationId,
+                active = false,
+            }
+        })
+        
+        -- Cleanup client-side NPCs and orders for this station
+        -- Note: DeleteAllOrderNPCs will handle NPC deletion, but we need to call it
+        -- before CURRENT_INTERACTION is cleared, so NPCs can walk away properly
+        if OrderNPCs[stationId] then
+            -- Store station data before cleanup
+            local stationCoords = CURRENT_INTERACTION.coords
+            local stationHeading = CURRENT_INTERACTION.heading
+            
+            -- Cleanup NPCs (they'll walk away since CURRENT_INTERACTION still exists)
+            DeleteAllOrderNPCs(stationId)
+        end
+        
+        -- Clear client-side state
+        CurrentOrders[stationId] = nil
+        
+        -- Clear submitted drinks (they're keyed by entity, which will be deleted)
+        -- But clear the table to be safe
+        SubmittedDrinks = {}
+        
+        -- Clear station controller
+        TriggerServerEvent("pickle_clubs:clearStationController", stationId, "interaction")
+    end
+end)
+
+-- Cleanup station interactions when stations are removed
+-- Note: Interaction entity cleanup for render distance is handled by core/client.lua automatically
+CreateThread(function()
+    while true do
+        Wait(5000) -- Check every 5 seconds
+        
+        -- Cleanup interactions for stations that no longer exist
+        for stationId, interactionIndex in pairs(StationInteractions) do
+            if not LoadedStations[stationId] then
+                -- Station no longer exists, cleanup interaction
+                DeleteInteraction(interactionIndex)
+                StationInteractions[stationId] = nil
+            end
+        end
+    end
+end)
+
+-- Cleanup all stations, interactions, and NPCs on resource stop
+AddEventHandler("onResourceStop", function(resource)
+    if resource == GetCurrentResourceName() then
+        -- Cleanup all station interactions
+        for stationId, interactionIndex in pairs(StationInteractions) do
+            DeleteInteraction(interactionIndex)
+        end
+        StationInteractions = {}
+        
+        -- Cleanup all NPCs
+        for stationId, stationNPCs in pairs(OrderNPCs) do
+            if stationNPCs then
+                for orderId, npcData in pairs(stationNPCs) do
+                    if npcData and DoesEntityExist(npcData.npc) then
+                        DeleteEntity(npcData.npc)
+                    end
+                end
+            end
+        end
+        OrderNPCs = {}
+        
+        -- Clear all station data
+        LoadedStations = {}
+        CurrentOrders = {}
+        BartenderServiceActive = {}
+        SubmittedDrinks = {}
+        
+        -- Clear station controller if currently interacting
+        if CURRENT_INTERACTION and CURRENT_INTERACTION.stationId then
+            TriggerServerEvent("pickle_clubs:clearStationController", CURRENT_INTERACTION.stationId, "interaction")
+        end
+    end
+end)
+
+CreateThread(function()
+    Wait(1000)
     RegisterInteractiveEntity("bottle", {
         init = function(coords, heading, data, params)
             local bottle = CreateProp(`ng_proc_brkbottle_02a`, coords.x, coords.y, coords.z + 0.3, false, false, false)
@@ -382,6 +1049,7 @@ CreateThread(function()
                 color = params.color or {255, 255, 255},
                 flavorIndex = params.flavorIndex, -- Index in Config.Bartender.flavors
                 progress = params.progress or 0.0,
+                heightOffset = 0.25,
             }
         end,
         entityThread = function(entity, data)
@@ -389,14 +1057,14 @@ CreateThread(function()
             local maxHeight = 0.1575
             local surfaceHeight = 0.01
             local alpha = 128
-            local height = ENTITIES[entity].progress * maxHeight
-            local rotation = GetEntityRotation(bottle)
+            local height = INT_ENTITIES[entity].progress * maxHeight
+            local rotation = GetEntityRotation(entity)
             local rx, ry, rz = rotation.x, rotation.y, rotation.z
             local forwardVector, rightVector, upVector, position = GetEntityMatrix(entity)
             local renderCoords = position + (upVector * surfaceHeight)
             local surfaceCoords = renderCoords + (upVector * height)
-            local color = ENTITIES[entity].color or {255, 255, 255}
-            if ENTITIES[entity].progress > 0.0 then
+            local color = INT_ENTITIES[entity].color or {255, 255, 255}
+            if INT_ENTITIES[entity].progress > 0.0 then
                 DrawMarker(1, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 90.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(28, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(1, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
@@ -405,11 +1073,11 @@ CreateThread(function()
         end,
         selectedThread = function(entity, data)
             local pitch = data.pitch
-            local currentEntity = ENTITIES[entity]
+            local currentEntity = INT_ENTITIES[entity]
             local minimum, maximum = data.minimum, data.maximum
             if math.abs(pitch) > 90.0 and math.abs(pitch) < 270.0 then
                 local closestChild = nil
-                for k,v in pairs(ENTITIES) do
+                for k,v in pairs(INT_ENTITIES) do
                     if k ~= CURRENT_ENTITY then
                         local forwardVector, rightVector, upVector, position = GetEntityMatrix(CURRENT_ENTITY)
                         local currentCoords = GetEntityCoords(CURRENT_ENTITY) + (upVector * 0.25)
@@ -426,7 +1094,7 @@ CreateThread(function()
                         end
                     end
                 end
-                local childEntity = closestChild and ENTITIES[closestChild.entity] or nil
+                local childEntity = closestChild and INT_ENTITIES[closestChild.entity] or nil
                 if closestChild and (childEntity.type == "drink") and currentEntity.progress > 0.0 and childEntity.progress < 1.0 then
                     if not currentEntity.ptfx or currentEntity.refreshTime < GetGameTimer() then
                         currentEntity.refreshTime = GetGameTimer() + 2000
@@ -448,7 +1116,7 @@ CreateThread(function()
                     -- -- Decrease bottle's progress when pouring (based on pitch)
                     -- if currentEntity.progress > 0.0 then
                     --     local pourRate = CalculatePourRate(pitch)
-                    --     local basePourAmount = 0.005 -- Maximum pour amount
+                    --     local basePourAmount = 0.015 -- Maximum pour amount
                     --     local pourAmount = basePourAmount * pourRate
                     --     currentEntity.progress = currentEntity.progress - pourAmount
                     --     if currentEntity.progress < 0.0 then
@@ -459,15 +1127,15 @@ CreateThread(function()
                     --         SetParticleFxLoopedScale(currentEntity.ptfx, scale)
                     --     end
                     -- end
-                    -- ENTITIES[CURRENT_ENTITY].progress = currentEntity.progress
+                    -- INT_ENTITIES[CURRENT_ENTITY].progress = currentEntity.progress
                     if (childEntity.type == "drink") and childEntity.progress < 1.0 then
                         local oldProgress = childEntity.progress
                         -- Calculate pour rate based on pitch (how much the bottle is tilted)
                         local pourRate = CalculatePourRate(pitch)
-                        local basePourAmount = 0.005 -- Maximum pour amount
+                        local basePourAmount = 0.015 -- Maximum pour amount
                         local pourAmount = basePourAmount * pourRate
                         childEntity.progress = childEntity.progress + pourAmount
-                        ENTITIES[closestChild.entity].progress = childEntity.progress
+                        INT_ENTITIES[closestChild.entity].progress = childEntity.progress
                         
                         -- Add flavor weight based on what's being poured
                         local bottleFlavorIndex = currentEntity.flavorIndex
@@ -494,7 +1162,7 @@ CreateThread(function()
                             childEntity.flavorWeights[bottleFlavorIndex] = childEntity.flavorWeights[bottleFlavorIndex] + flavorProportion
                             
                             -- Update the entity data
-                            ENTITIES[closestChild.entity].flavorWeights = childEntity.flavorWeights
+                            INT_ENTITIES[closestChild.entity].flavorWeights = childEntity.flavorWeights
                         end
                     end
                 elseif currentEntity.ptfx then
@@ -509,7 +1177,7 @@ CreateThread(function()
             end
         end,
         unSelected = function(entity, data)
-            local currentEntity = ENTITIES[entity]
+            local currentEntity = INT_ENTITIES[entity]
             if not currentEntity then return end
             if currentEntity.ptfx then
                 StopParticleFxLooped(currentEntity.ptfx, false)
@@ -526,6 +1194,7 @@ CreateThread(function()
             return drink, {
                 progress = params.progress or 0.0,
                 flavorWeights = params.flavorWeights or {}, -- Track proportion of each flavor: {1 = 0.01, 2 = 0.02, ...}
+                heightOffset = 0.25,
             }
         end,
         entityThread = function(entity, data)
@@ -533,16 +1202,16 @@ CreateThread(function()
             local maxHeight = 0.1875
             local surfaceHeight = 0.01
             local alpha = 128
-            local height = ENTITIES[entity].progress * maxHeight
+            local height = INT_ENTITIES[entity].progress * maxHeight
             local rotation = GetEntityRotation(entity)
             local rx, ry, rz = rotation.x, rotation.y, rotation.z
             local forwardVector, rightVector, upVector, position = GetEntityMatrix(entity)
             local renderCoords = position + (upVector * surfaceHeight)
             local surfaceCoords = renderCoords + (upVector * height)
             -- Calculate color from flavor weights
-            local calculatedColor = CalculateColorFromFlavors(ENTITIES[entity].flavorWeights)
+            local calculatedColor = CalculateColorFromFlavors(INT_ENTITIES[entity].flavorWeights)
             local color = calculatedColor or {255, 255, 255}
-            if ENTITIES[entity].progress > 0.0 then
+            if INT_ENTITIES[entity].progress > 0.0 then
                 DrawMarker(1, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 90.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(28, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(1, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
@@ -550,7 +1219,8 @@ CreateThread(function()
             end
             
             -- Draw flavor percentages above the drink
-            local flavorWeights = ENTITIES[entity].flavorWeights
+            local secondaryTitle = math.floor(INT_ENTITIES[entity].progress * 100) .. "%"
+            local flavorWeights = INT_ENTITIES[entity].flavorWeights
             if flavorWeights and next(flavorWeights) ~= nil then
                 local textY = position.z + 0.15 -- Start above the drink
                 local textLines = {}
@@ -561,32 +1231,52 @@ CreateThread(function()
                         local flavor = Config.Bartender.flavors[flavorIndex]
                         local percentage = math.floor(weight * 100 + 0.5) -- Round to nearest integer
                         if flavor then
-                            local label = flavor.label or ("Flavor " .. flavorIndex)
-                            table.insert(textLines, {index = flavorIndex, text = label .. ": " .. percentage .. "%", weight = weight})
+                            local label = flavor.label or (_L("bartender_flavor_prefix") .. flavorIndex)
+                            table.insert(textLines, {type = "progress", label = label, value = percentage})
                         else
-                            table.insert(textLines, {index = flavorIndex, text = "Flavor " .. flavorIndex .. ": " .. percentage .. "%", weight = weight})
+                            table.insert(textLines, {type = "progress", label = _L("bartender_flavor_prefix") .. flavorIndex, value = percentage})
                         end
                     end
                 end
                 
                 -- Sort by weight (descending) so most prominent flavors are shown first
-                table.sort(textLines, function(a, b) return a.weight > b.weight end)
-                
-                -- Draw each line
-                for i, lineData in ipairs(textLines) do
-                    local textCoords = position + (upVector * (0.15 + (i - 1) * 0.03))
-                    DrawText3D(textCoords.x, textCoords.y, textCoords.z, lineData.text)
+                table.sort(textLines, function(a, b) return a.value > b.value end)
+                local title = ""
+                if #textLines == 1 or (textLines[1].value / 100) >= (1.0 - Config.Bartender.mixThreshold) then
+                    title = textLines[1].label
+                else
+                    title = textLines[1].label .. "-" .. textLines[2].label
                 end
+                if INT_ENTITIES[entity].progress >= 1.0 then 
+                    table.insert(textLines, {type = "text", label = _L("bartender_place_drink_coaster"), center = true })
+                    
+                    -- Check if drink is on coaster and submit if not already submitted
+                    CheckDrinkOnCoaster(entity)
+                end
+                UpdateInteractiveEntityDisplay(entity, {
+                    title = title .. _L("bartender_drink_suffix"),
+                    secondaryTitle = secondaryTitle,
+                    rows = textLines
+                })
+            else
+                UpdateInteractiveEntityDisplay(entity, {
+                    title = _L("bartender_empty_drink"),
+                    secondaryTitle = "0%",
+                    rows = {
+                        {type = "text", label = _L("bartender_fill_drink_flavors")}
+                    }
+                })
             end
+
         end,
         selectedThread = function(entity, data)
             local pitch = data.pitch
-            local currentEntity = ENTITIES[entity]
+            local currentEntity = INT_ENTITIES[entity]
             local minimum, maximum = data.minimum, data.maximum
             if math.abs(pitch) > 90.0 and math.abs(pitch) < 270.0 and currentEntity.progress > 0.0 then
                 -- Calculate pour rate based on pitch (how much the drink is tilted)
                 local pourRate = CalculatePourRate(pitch)
-                local basePourAmount = 0.005 -- Maximum pour amount
+                local basePourAmount = 0.015 -- Maximum pour amount
                 local pourAmount = basePourAmount * pourRate
                 currentEntity.progress = currentEntity.progress - pourAmount
                 -- Ensure progress doesn't go below 0
@@ -594,7 +1284,7 @@ CreateThread(function()
                     currentEntity.progress = 0.0
                     -- Reset flavor weights when drink is fully poured out
                     currentEntity.flavorWeights = {}
-                    ENTITIES[entity].flavorWeights = {}
+                    INT_ENTITIES[entity].flavorWeights = {}
                 end
                 if not currentEntity.ptfx or currentEntity.refreshTime < GetGameTimer() then
                     currentEntity.refreshTime = GetGameTimer() + 2000
@@ -624,7 +1314,7 @@ CreateThread(function()
             end
         end,
         unSelected = function(entity, data)
-            local currentEntity = ENTITIES[entity]
+            local currentEntity = INT_ENTITIES[entity]
             if not currentEntity then return end
             if currentEntity.ptfx then
                 StopParticleFxLooped(currentEntity.ptfx, false)
@@ -635,119 +1325,29 @@ CreateThread(function()
     })
     RegisterInteractiveEntity("coaster", {
         init = function(coords, heading, data, params)
-            local coaster = CreateProp(`npds_coaster_round_01`, coords.x, coords.y, coords.z + 0.3, false, false, false)
+            local coaster = CreateProp(`npds_coaster_round_02`, coords.x, coords.y, coords.z - 0.035, false, false, false)
             SetEntityCollision(coaster, true, true)
             SetEntityHeading(coaster, heading)
-            return coaster, {}
+            return coaster, {
+                disableInteraction = true,
+                disableGravity = true,
+            }
         end,
     })
-    CreateInteractiveEntity("coaster", coords + (rightVector * -0.5), heading, {})
-    CreateInteractiveEntity("drink", coords + (rightVector * -0.5), heading, {
-        progress = 1.0,
-        flavorWeights = {
-            [1] = 1.0,
-        },
+    RegisterInteractiveEntity("register", {
+        init = function(coords, heading, data, params)
+            local till = CreateProp(`vw_prop_casino_till`, coords.x, coords.y, coords.z, false, false, false)
+            SetEntityCollision(till, true, true)
+            SetEntityHeading(till, heading)
+            return till, {
+                disableInteraction = true,
+                disableGravity = true,
+            }
+        end,
+        clicked = function(entity, data)
+            OpenBartenderRegister()
+        end,
     })
-    for i=1, #Config.Bartender.flavors do
-        local flavor = Config.Bartender.flavors[i]
-        CreateInteractiveEntity("bottle", coords + (rightVector * (0.5)) + (rightVector * (-0.1 * i)), heading, {
-            color = flavor.color,
-            flavorIndex = i, -- Store the flavor index
-            progress = 1.0,
-        })
-    end
-    CreateThread(function()
-        local pitch = 0.0
-        local lastX, lastY = -1, -1
-        while true do
-            DisableControlAction(0, 1, true)
-            DisableControlAction(0, 2, true)
-            DisableControlAction(0, 24, true)
-            DisableControlAction(0, 25, true)
-            DisableControlAction(0, 51, true)
-            local screenX, screenY = GetNuiCursorPosition()
-            local x, y = GetActualScreenResolution()
-            screenX = screenX / x
-            screenY = screenY / y
-            for k,v in pairs(ENTITIES) do
-                InteractiveEntityThread(k, {
-                    coords = coords,
-                    heading = heading,
-                    minimum = minimum,
-                    maximum = maximum,
-                })
-            end
-            if not CURRENT_ENTITY then
-                local hit, dragCoords, entityHit = GetCursorRaycast(camCoords, vector3(0.0, 0.0, heading))
-                -- DrawMarker(1, dragCoords.x, dragCoords.y, dragCoords.z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.1, 0.1, 255, 0, 0, 255, false, false, 2)
-                if IsDisabledControlJustPressed(0, 24)  then
-                    if hit and DoesEntityExist(entityHit) and ENTITIES[entityHit] then
-                        CURRENT_ENTITY = entityHit
-                        pitch = GetEntityRotation(CURRENT_ENTITY).x
-                    end
-                end
-                SetMouseCursorThisFrame()
-            else
-                local currentEntity = ENTITIES[CURRENT_ENTITY]
-                local minimum, maximum = GetModelDimensions(GetEntityModel(CURRENT_ENTITY))
-                local dragCoords = coords + (rightVector * lerp(-0.85, 0.85, screenX)) - (upVector * (screenY - 1))
-                SelectedInteractiveEntityThread(CURRENT_ENTITY, {
-                    coords = coords,
-                    heading = heading,
-                    minimum = minimum,
-                    maximum = maximum,
-                    dragCoords = dragCoords,
-                    pitch = pitch,
-                })
-                if IsDisabledControlPressed(0, 25) then
-                    local normal = GetDisabledControlNormal(0, 1) * 60.0
-                    pitch = pitch + normal
-                    pitch = (pitch % 360 + 360) % 360
-                    SetEntityRotation(CURRENT_ENTITY, 0.0, pitch, heading, 2, true)
-                    if lastX == -1 then
-                        lastX = screenX
-                        lastY = screenY
-                    end
-                else
-                    SetMouseCursorThisFrame()
-                    if lastX ~= -1 then
-                        screenX = lastX
-                        screenY = lastY
-                        SetCursorLocation(lastX, lastY)
-                        lastX = -1
-                        lastY = -1
-                    else
-                        local forwardVector, rightVector, upVector, position = GetEntityMatrix(CURRENT_ENTITY)
-                        local propCoords = dragCoords
-                        currentEntity.zOffset = GetEntityCoords(CURRENT_ENTITY).z - coords.z
-                        SetEntityCoordsNoOffset(CURRENT_ENTITY, propCoords.x, propCoords.y, propCoords.z - (maximum.z - minimum.z) * 0.5)
-                        if not IsDisabledControlPressed(0, 24) then
-                            UnselectedInteractiveEntity(CURRENT_ENTITY)
-                            CURRENT_ENTITY = nil
-                        end
-                    end
-                end
-            end
-            for k,v in pairs(ENTITIES) do
-                if CURRENT_ENTITY ~= k and (v.zOffset > 0.0 or v.zOffset < 0.0) then
-                    v.zOffset = v.zOffset - 0.050
-                    if v.zOffset <= 0.0 then
-                        v.zOffset = 0.0
-                        SetEntityRotation(k, 0.0, 0.0, heading, 2, true)
-                    end
-                    SetEntityCoordsNoOffset(k, GetEntityCoords(k).x, GetEntityCoords(k).y, coords.z + v.zOffset)
-                end
-            end
-            Wait(0)
-        end
-    end)
-end)
-
-AddEventHandler("onResourceStop", function(resource)
-    if resource == GetCurrentResourceName() then
-        for k,v in pairs(ENTITIES) do
-            DeleteEntity(k)
-        end
-        ENTITIES = {}
-    end
+    -- Stations are now loaded dynamically from database via syncStations event
+    -- Hardcoded station removed - use /managebar to create stations
 end)

@@ -1,5 +1,9 @@
 import { Config, useConfig } from "./providers/config";
 import { Translate } from "./providers/locale/Locale";
+import { InteractiveEntityDisplay } from "./components/InteractiveEntityDisplay";
+import { OrderDisplay } from "./components/OrderDisplay";
+import { useNuiEvent } from "./providers/nui/useNui";
+import { useState } from "react";
 
 export function GetItemLabel({item} : {item: string}) {
   const { config } = useConfig();
@@ -48,8 +52,21 @@ export function AppControls({controls} : {controls?: {key: string, label: any}[]
 }
 
 function App() {
+  const [controls, setControls] = useState<{key: string, label: any}[] | null>(null);
+
+  useNuiEvent("updateControls", (data: {controls?: {key: string, label: string}[]}) => {
+    if (data && data.controls && Array.isArray(data.controls)) {
+      setControls(data.controls.map(c => ({key: c.key, label: <Translate id={c.label} />})));
+    } else {
+      setControls(null);
+    }
+  });
+
   return (
     <div className="dark w-screen h-screen absolute text-primary top-0 left-0">
+      {controls && controls.length > 0 && <AppControls controls={controls} />}
+      <InteractiveEntityDisplay />
+      <OrderDisplay />
     </div>
   )
 }
