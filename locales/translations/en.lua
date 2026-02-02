@@ -20,4 +20,13 @@ Language["en"] = {
     bartender_stop_service = "Stop Service",
     bartender_order_timer = "%s remaining",
     bartender_current_order = "Current Order",
+    objects_position = "[MOUSE]     - Position  \n[HOLD LEFT CLICK]     - Position Up / Down  \n[SCROLL UP / DOWN]     - Rotate  \n[SHIFT]     - Faster Movement  \n",
+    objects_cancel = "Cancel Placement",
+    objects_freeze = "Freeze Object",
+    objects_unfreeze = "Unfreeze Object",
+    objects_save = "Save Object",
+    drink_hold_to_drink = "Hold to Drink",
+    drink_drinking = "Drinking...",
+    drink_progress = "%s%%",
+    drink_throw_away = "Throw Away",
 }

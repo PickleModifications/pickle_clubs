@@ -140,6 +140,11 @@ function IsPlayerAdmin(source)
     return false
 end
 
+function AddAlcohol(source, amount)
+    if not amount or amount <= 0 then return end
+    TriggerClientEvent("esx_status:add", source, "drunk", amount)
+end
+
 function AddSocietyMoney(name, amount)
     TriggerEvent('esx_addonaccount:getSharedAccount', "society_"..name, function(account)
         account.addMoney(amount)

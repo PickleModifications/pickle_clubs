@@ -28,7 +28,7 @@ Config.FrameworkSettings = {
         if type(item) == "table" and item.metadata then return item.metadata end
         if type(data) == "table" and data.info then return data.info end
         if type(item) == "table" and item.info then return item.info end
-        print("^1ERROR: METADATA IS WRONGLY CONFIGURED, CHECK CONFIG.LUA:^0", item, data)
+        print("ERROR: METADATA IS WRONGLY CONFIGURED, CHECK CONFIG.LUA:^0", item, data)
     end
 }
 
@@ -88,6 +88,10 @@ Config.Bartender = {
         },
         registerModel = `vw_prop_casino_till`, -- Model for gizmo placement
     },
+}
+
+Config.Drinks = {
+    alcoholPerDrink = 1000000,
 }
 
 Config.Peds = {

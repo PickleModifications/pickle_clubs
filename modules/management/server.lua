@@ -26,7 +26,7 @@ function LoadAllStations()
         end
         -- Sync to all clients
         TriggerClientEvent("pickle_clubs:syncStations", -1, Stations)
-        print("^2Loaded " .. (#results or 0) .. " bartending stations")
+        print("Loaded " .. (#results or 0) .. " bartending stations")
         
         -- Set register visibility based on current controller state
         for stationId, _ in pairs(Stations) do
@@ -161,9 +161,9 @@ function DeleteStation(stationId)
             -- Sync to all clients
             TriggerClientEvent("pickle_clubs:syncStations", -1, Stations)
             TriggerClientEvent("pickle_clubs:removeStation", -1, stationId)
-            return true
         end
     end)
+    return true
 end
 
 -- Get station data
@@ -236,37 +236,37 @@ end
 RegisterNetEvent("pickle_clubs:createStation", function(coords, heading, blipData)
     local source = source
     if not IsPlayerAdmin(source) then
-        ShowNotification(source, "^1You don't have permission to create stations")
+        ShowNotification(source, "You don't have permission to create stations")
         return
     end
     
     CreateStation(coords, heading, blipData)
-    ShowNotification(source, "^2Station created successfully")
+    ShowNotification(source, "Station created successfully")
 end)
 
 RegisterNetEvent("pickle_clubs:updateStation", function(stationId, coords, heading, blipData)
     local source = source
     if not IsPlayerAdmin(source) then
-        ShowNotification(source, "^1You don't have permission to update stations")
+        ShowNotification(source, "You don't have permission to update stations")
         return
     end
     
     UpdateStation(stationId, coords, heading, blipData)
-    ShowNotification(source, "^2Station updated successfully")
+    ShowNotification(source, "Station updated successfully")
 end)
 
 RegisterNetEvent("pickle_clubs:deleteStation", function(stationId)
     local source = source
     if not IsPlayerAdmin(source) then
-        ShowNotification(source, "^1You don't have permission to delete stations")
+        ShowNotification(source, "You don't have permission to delete stations")
         return
     end
     
     local success, message = DeleteStation(stationId)
     if success then
-        ShowNotification(source, "^2Station deleted successfully")
+        ShowNotification(source, "Station deleted successfully")
     else
-        ShowNotification(source, "^1" .. (message or "Failed to delete station"))
+        ShowNotification(source, "" .. (message or "Failed to delete station"))
     end
 end)
 
@@ -340,7 +340,7 @@ MySQL.ready(function()
         )
     ]], {}, function(result)
         if result then
-            print("^2Bartending stations table created/verified")
+            print("Bartending stations table created/verified")
         end
         -- Load all stations after table is ready
         LoadAllStations()
@@ -378,7 +378,7 @@ exports("ClearStationController", ClearStationController)
 -- Command handler
 RegisterCommand("managebar", function(source, args, rawCommand)
     if not IsPlayerAdmin(source) then
-        ShowNotification(source, "^1You don't have permission to use this command")
+        ShowNotification(source, "You don't have permission to use this command")
         return
     end
     

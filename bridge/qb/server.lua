@@ -154,6 +154,14 @@ function IsPlayerAdmin(source)
     return false
 end
 
+function AddAlcohol(source, amount)
+    if not amount or amount <= 0 then return end
+    local Player = QBCore.Functions.GetPlayer(tonumber(source))
+    if not Player then return end
+    local current = Player.PlayerData.metadata and Player.PlayerData.metadata["drunk"] or 0
+    Player.Functions.SetMetaData("drunk", current + amount)
+end
+
 function AddSocietyMoney(name, amount)
     if Config.FrameworkSettings.society == "qb-management" then
         exports["qb-management"]:AddMoney(name, amount)

@@ -94,7 +94,7 @@ end
 function CreateInteractiveEntity(entType, coords, heading, params)
     -- local entity = CreateEntity(entType, coords, heading, data)
     -- INT_ENTITIES[entity] = data
-    if not InteractiveEntityTypes[entType] then return print("^1ERROR: No interactive entity type found for: ", entType) end
+    if not InteractiveEntityTypes[entType] then return print("ERROR: No interactive entity type found for: ", entType) end
     local entityData = {
         type = entType,
         zOffset = 0.01,
@@ -105,17 +105,17 @@ function CreateInteractiveEntity(entType, coords, heading, params)
     if InteractiveEntityTypes[entType].init then
         entity, newData = InteractiveEntityTypes[entType].init(coords, heading, entityData, params)
     end
-    if not entity then return print("^1ERROR: No entity created for: ", entType) end
+    if not entity then return print("ERROR: No entity created for: ", entType) end
     for k,v in pairs(newData or {}) do
         entityData[k] = v
     end
     INT_ENTITIES[entity] = entityData
-    print("^2Created interactive entity: ", entType, json.encode(entityData, {indent = true}))
+    print("Created interactive entity: ", entType, json.encode(entityData, {indent = true}))
     return entity
 end
 
 function StartInteraction(coords, heading)
-    if CURRENT_INTERACTION then return ShowNotification("^1ERROR: Interaction already started") end
+    if CURRENT_INTERACTION then return ShowNotification("ERROR: Interaction already started") end
     local temp = CreateTennisBall(coords.x, coords.y, coords.z)
     SetEntityRotation(temp, 0.0, 0.0, heading, 2, true)
     local forwardVector, rightVector, upVector, position = GetEntityMatrix(temp)

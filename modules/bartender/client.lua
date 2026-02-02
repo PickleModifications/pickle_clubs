@@ -6,6 +6,24 @@ SubmittedDrinks = {} -- Track which drinks have been submitted
 LoadedStations = {} -- stationId -> station data
 StationInteractions = {} -- stationId -> interactionIndex
 
+-- Equipped drinks system
+EquippedDrinks = {} -- playerId -> {prop, flavorWeights, color, progress, thread}
+PlayerEquippedDrink = nil -- Current player's equipped drink data
+DrinkingThread = nil -- Thread for drinking mechanics
+
+-- Sync locale to NUI on resource start
+CreateThread(function()
+    Wait(2000) -- Wait for everything to load
+    if Language and Language[Config.Language] then
+        SendNUIMessage({
+            type = "setConfig",
+            config = {
+                locale = Language[Config.Language]
+            }
+        })
+    end
+end)
+
 -- Calculate pour rate based on pitch (tilt angle)
 -- Returns a multiplier from 0.0 to 1.0 based on how much the entity is tilted
 function CalculatePourRate(pitch)
@@ -58,13 +76,17 @@ function CalculateColorFromFlavors(flavorWeights)
     -- Iterate through ALL flavor indexes that have been poured into the drink
     -- Calculate weighted average of ALL flavors based on their proportions
     for flavorIndex, weight in pairs(flavorWeights) do
-        local flavor = Config.Bartender.flavors[flavorIndex]
-        if flavor and flavor.color then
-            -- Add this flavor's contribution to the total color
-            totalWeight = totalWeight + weight
-            totalR = totalR + flavor.color[1] * weight
-            totalG = totalG + flavor.color[2] * weight
-            totalB = totalB + flavor.color[3] * weight
+        -- Ensure flavorIndex is a number (handle both string and numeric keys)
+        local flavorNum = tonumber(flavorIndex)
+        if flavorNum then
+            local flavor = Config.Bartender.flavors[flavorNum]
+            if flavor and flavor.color then
+                -- Add this flavor's contribution to the total color
+                totalWeight = totalWeight + weight
+                totalR = totalR + flavor.color[1] * weight
+                totalG = totalG + flavor.color[2] * weight
+                totalB = totalB + flavor.color[3] * weight
+            end
         end
     end
     
@@ -92,6 +114,110 @@ function CalculateColorFromFlavors(flavorWeights)
     
     -- Return the weighted average color from ALL flavors
     return {r, g, b}
+end
+
+-- Generate flavorWeights from item name (for when metadata is missing)
+-- Assumes 50/50 mix for mixed drinks
+function GenerateFlavorWeightsFromItemName(itemName)
+    if not itemName then return {} end
+    
+    -- Check if it's a mixed drink (contains _bar_drink)
+    if string.match(itemName, "_bar_drink$") then
+        -- Extract the two flavor names
+        local flavorPart = string.gsub(itemName, "_bar_drink$", "")
+        local flavors = {}
+        for flavorName in string.gmatch(flavorPart, "([^_]+)") do
+            table.insert(flavors, flavorName)
+        end
+        
+        if #flavors == 2 then
+            -- Find flavor indices (ensure we get both flavors)
+            local flavorWeights = {}
+            local foundCount = 0
+            for i = 1, #Config.Bartender.flavors do
+                local flavor = Config.Bartender.flavors[i]
+                if flavor then
+                    local flavorName = string.lower(flavor.label)
+                    flavorName = string.gsub(flavorName, "%s+", "_")
+                    flavorName = string.gsub(flavorName, "[^%w_]", "")
+                    
+                    if flavorName == flavors[1] or flavorName == flavors[2] then
+                        flavorWeights[i] = 0.5 -- 50/50 mix
+                        foundCount = foundCount + 1
+                    end
+                end
+            end
+            
+            -- Only return if we found both flavors
+            if foundCount == 2 then
+                return flavorWeights
+            end
+        end
+    elseif string.match(itemName, "_drink$") then
+        -- Single flavor drink
+        local flavorPart = string.gsub(itemName, "_drink$", "")
+        
+        -- Find matching flavor
+        for i = 1, #Config.Bartender.flavors do
+            local flavor = Config.Bartender.flavors[i]
+            if flavor then
+                local flavorName = string.lower(flavor.label)
+                flavorName = string.gsub(flavorName, "%s+", "_")
+                flavorName = string.gsub(flavorName, "[^%w_]", "")
+                
+                if flavorName == flavorPart then
+                    return {[i] = 1.0} -- 100% single flavor
+                end
+            end
+        end
+    end
+    
+    return {}
+end
+
+-- Generate item name from flavorWeights
+-- Single flavor: {flavor_name}_drink
+-- Mixed drinks: Sort top 2 flavors alphabetically -> {flavor1}_{flavor2}_bar_drink
+function GenerateDrinkItemName(flavorWeights)
+    if not flavorWeights or next(flavorWeights) == nil then
+        return nil
+    end
+    
+    -- Collect flavors with their weights
+    local flavorList = {}
+    for flavorIndex, weight in pairs(flavorWeights) do
+        if weight > 0.001 then -- Only include significant flavors
+            local flavor = Config.Bartender.flavors[tonumber(flavorIndex)]
+            if flavor then
+                -- Convert label to lowercase with underscores (sanitize for item name)
+                local flavorName = string.lower(flavor.label)
+                flavorName = string.gsub(flavorName, "%s+", "_") -- Replace spaces with underscores
+                flavorName = string.gsub(flavorName, "[^%w_]", "") -- Remove special characters
+                table.insert(flavorList, {
+                    name = flavorName,
+                    weight = weight,
+                    index = tonumber(flavorIndex)
+                })
+            end
+        end
+    end
+    
+    if #flavorList == 0 then
+        return nil
+    end
+    
+    -- Sort by weight (descending)
+    table.sort(flavorList, function(a, b) return a.weight > b.weight end)
+    
+    -- Single flavor
+    if #flavorList == 1 or flavorList[1].weight >= (1.0 - Config.Bartender.mixThreshold) then
+        return flavorList[1].name .. "_drink"
+    end
+    
+    -- Mixed drink: sort top 2 alphabetically
+    local topFlavors = {flavorList[1].name, flavorList[2].name}
+    table.sort(topFlavors) -- Alphabetical sort
+    return topFlavors[1] .. "_" .. topFlavors[2] .. "_bar_drink"
 end
 
 -- Convert RGB (0-255) to HSL (0-360, 0-1, 0-1)
@@ -314,7 +440,7 @@ end
 
 function SpawnOrderNPC(orderData)
     if not orderData or not orderData.stationId or not orderData.spawnCoords or not orderData.walkCoords then
-        print("^1ERROR: Invalid order data for NPC spawn")
+        print("ERROR: Invalid order data for NPC spawn")
         return
     end
     
@@ -659,24 +785,66 @@ function CheckDrinkOnCoaster(drinkEntity)
                     end
                 end
             end
+        else
+            -- No active order - give player a useable item for the drink
+            if drinkData.flavorWeights and not SubmittedDrinks[drinkEntity] then
+                local itemName = GenerateDrinkItemName(drinkData.flavorWeights)
+                if itemName then
+                    SubmittedDrinks[drinkEntity] = true
+                    
+                    -- Normalize flavorWeights for mixed drinks to 50/50
+                    local normalizedWeights = {}
+                    local flavorList = {}
+                    for flavorIndex, weight in pairs(drinkData.flavorWeights) do
+                        if weight > 0.001 then
+                            table.insert(flavorList, {
+                                index = tonumber(flavorIndex),
+                                weight = weight
+                            })
+                        end
+                    end
+                    
+                    -- Sort by weight
+                    table.sort(flavorList, function(a, b) return a.weight > b.weight end)
+                    
+                    -- If it's a mixed drink (2+ flavors), normalize to 50/50
+                    if #flavorList >= 2 and flavorList[1].weight < (1.0 - Config.Bartender.mixThreshold) then
+                        -- Mixed drink: use top 2 flavors at 50/50
+                        normalizedWeights[flavorList[1].index] = 0.5
+                        normalizedWeights[flavorList[2].index] = 0.5
+                    else
+                        -- Single flavor: keep original weight (normalized to 1.0)
+                        normalizedWeights[flavorList[1].index] = 1.0
+                    end
+                    
+                    -- Send normalized flavorWeights to server for metadata
+                    TriggerServerEvent("pickle_clubs:giveDrinkItem", itemName, normalizedWeights)
+                    -- Clear the drink after giving item
+                    INT_ENTITIES[drinkEntity].progress = 0.0
+                    INT_ENTITIES[drinkEntity].flavorWeights = {}
+                    SetTimeout(1000, function() 
+                        SubmittedDrinks[drinkEntity] = nil
+                    end)
+                end
+            end
         end
     end
 end
 
 RegisterNetEvent("pickle_clubs:drinkSubmissionResult", function(success, feedback, payment)
     if success then
-        ShowNotification("^2" .. feedback)
+        ShowNotification("" .. feedback)
         if payment then
-            ShowNotification("^2You received $" .. payment)
+            ShowNotification("You received $" .. payment)
         end
     else
-        ShowNotification("^1" .. feedback)
+        ShowNotification("" .. feedback)
     end
 end)
 
 function OpenBartenderRegister()
     if not CURRENT_INTERACTION or not CURRENT_INTERACTION.stationId then
-        ShowNotification("^1ERROR: No active station interaction")
+        ShowNotification("ERROR: No active station interaction")
         return
     end
     
@@ -689,13 +857,13 @@ function OpenBartenderRegister()
             description = "Start accepting NPC orders",
             onSelect = function()
                 if not CURRENT_INTERACTION or not CURRENT_INTERACTION.stationId then
-                    ShowNotification("^1ERROR: No active interaction")
+                    ShowNotification("ERROR: No active interaction")
                     return
                 end
                 -- Trigger server event with stationId
                 TriggerServerEvent("pickle_clubs:startBartenderService", stationId, CURRENT_INTERACTION.coords, CURRENT_INTERACTION.heading)
                 BartenderServiceActive[stationId] = true
-                ShowNotification("^2Bartender service started")
+                ShowNotification("Bartender service started")
             end
         })
     else
@@ -705,7 +873,7 @@ function OpenBartenderRegister()
             onSelect = function()
                 TriggerServerEvent("pickle_clubs:stopBartenderService", stationId)
                 BartenderServiceActive[stationId] = false
-                ShowNotification("^2Bartender service stopped")
+                ShowNotification("Bartender service stopped")
             end
         })
     end
@@ -798,7 +966,7 @@ end
 RegisterNetEvent("pickle_clubs:startStationInteraction", function(data)
     local stationId = data and data.stationId or data
     if not stationId or not LoadedStations[stationId] then 
-        ShowNotification("^1Station not found")
+        ShowNotification("Station not found")
         return 
     end
     
@@ -823,7 +991,7 @@ end)
 -- Create interaction entities for a station
 function CreateStationInteraction(station)
     if CURRENT_INTERACTION then
-        ShowNotification("^1ERROR: Interaction already started")
+        ShowNotification("ERROR: Interaction already started")
         return
     end
     local temp = CreateTennisBall(station.coords.x, station.coords.y, station.coords.z)
@@ -887,7 +1055,7 @@ end
 
 -- Handle station control denial
 RegisterNetEvent("pickle_clubs:stationControlDenied", function(message)
-    ShowNotification("^1" .. (message or "Station is already in use"))
+    ShowNotification("" .. (message or "Station is already in use"))
 end)
 
 -- Load stations when synced
@@ -1350,4 +1518,415 @@ CreateThread(function()
     })
     -- Stations are now loaded dynamically from database via syncStations event
     -- Hardcoded station removed - use /managebar to create stations
+end)
+
+-- Helper function to throw away drink with physics
+local function ThrowAwayDrink(equippedDrinkRef)
+    if not equippedDrinkRef then return end
+    
+    local playerPed = PlayerPedId()
+    
+    -- Stop any animations
+    ClearPedTasks(playerPed)
+
+    if DoesEntityExist(equippedDrinkRef.prop) then
+        DeleteEntity(equippedDrinkRef.prop)
+    end
+    -- Hide controls
+    SendNUIMessage({
+        type = "updateControls",
+        controls = nil
+    })
+    TriggerServerEvent("pickle_clubs:removeEquippedDrinkSync")
+    PlayerEquippedDrink = nil
+end
+
+-- Handle drink item use
+RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavorWeights)
+    local playerPed = PlayerPedId()
+    
+    -- Clean up any existing equipped drink
+    if PlayerEquippedDrink then
+        if PlayerEquippedDrink.prop and DoesEntityExist(PlayerEquippedDrink.prop) then
+            DeleteEntity(PlayerEquippedDrink.prop)
+        end
+        ClearPedTasks(playerPed)
+        -- Notify server to remove equipped drink
+        TriggerServerEvent("pickle_clubs:removeEquippedDrinkSync")
+        PlayerEquippedDrink = nil
+    end
+    
+    -- If flavorWeights is missing or empty, generate from item name (assumes 50/50 for mixed drinks)
+    if not flavorWeights or next(flavorWeights) == nil then
+        flavorWeights = GenerateFlavorWeightsFromItemName(itemName)
+    end
+    
+    -- Calculate color from flavor weights
+    local color = CalculateColorFromFlavors(flavorWeights) or {255, 255, 255}
+    
+    -- Create drink prop
+    local drinkProp = CreateProp(`prop_tall_glass`, 0.0, 0.0, 0.0, false, false, false)
+    SetEntityCollision(drinkProp, false, false)
+    SetEntityVisible(drinkProp, true, false)
+    
+    -- Attach to right hand (bone index 60309 or 28422)
+    local boneIndex = GetPedBoneIndex(playerPed, 28422) -- hand_r
+    AttachEntityToEntity(drinkProp, playerPed, boneIndex, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, true, true, false, true, 1, true)
+    
+    -- Play idle animation (holding drink)
+    local idleDict = "amb@world_human_drinking@beer@male@base"
+    RequestAnimDict(idleDict)
+    while not HasAnimDictLoaded(idleDict) do
+        Wait(0)
+    end
+    TaskPlayAnim(playerPed, idleDict, "base", 8.0, -8.0, -1, 49, 0, false, false, false)
+    
+    -- Store equipped drink data
+    PlayerEquippedDrink = {
+        prop = drinkProp,
+        flavorWeights = flavorWeights or {},
+        color = color,
+        progress = 1.0, -- Start at 100% (full drink)
+        itemName = itemName,
+        isDrinking = false,
+        drinkAnimDict = "amb@world_human_drinking@beer@male@idle_a",
+        drinkAnim = "idle_b",
+        idleDict = idleDict,
+        idleAnim = "base"
+    }
+    
+    -- Store reference for threads
+    local equippedDrinkRef = PlayerEquippedDrink
+    
+    -- Sync to nearby players
+    local playerCoords = GetEntityCoords(playerPed)
+    TriggerServerEvent("pickle_clubs:syncEquippedDrink", playerCoords, flavorWeights, color, equippedDrinkRef.progress)
+    
+    -- Periodic sync thread to update position
+    CreateThread(function()
+        while equippedDrinkRef and DoesEntityExist(playerPed) do
+            Wait(2000) -- Update every 2 seconds
+            if equippedDrinkRef then
+                local currentCoords = GetEntityCoords(playerPed)
+                TriggerServerEvent("pickle_clubs:syncEquippedDrink", currentCoords, equippedDrinkRef.flavorWeights, equippedDrinkRef.color, equippedDrinkRef.progress)
+            end
+        end
+    end)
+    
+    -- Create marker rendering thread
+    equippedDrinkRef.thread = CreateThread(function()
+        while equippedDrinkRef and DoesEntityExist(playerPed) do
+            if DoesEntityExist(drinkProp) then
+                local propCoords = GetEntityCoords(drinkProp)
+                local forwardVector, rightVector, upVector, position = GetEntityMatrix(drinkProp)
+                local radius = 0.08
+                local maxHeight = 0.1875
+                local surfaceHeight = 0.01
+                local alpha = 128
+                local height = equippedDrinkRef.progress * maxHeight
+                local rotation = GetEntityRotation(drinkProp)
+                local rx, ry, rz = rotation.x, rotation.y, rotation.z
+                local renderCoords = position + (upVector * surfaceHeight)
+                local surfaceCoords = renderCoords + (upVector * height)
+                local drinkColor = equippedDrinkRef.color
+                
+                -- Draw drink markers (same as entityThread for drinks)
+                DrawMarker(1, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 90.0, -ry, rz, radius, radius, height, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
+                DrawMarker(28, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
+                DrawMarker(1, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius, radius, height, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
+                DrawMarker(28, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
+            end
+            Wait(0)
+        end
+    end)
+    
+    -- Start drinking mechanics thread
+    DrinkingThread = CreateThread(function()
+        while equippedDrinkRef and DoesEntityExist(playerPed) do
+            Wait(0)
+            
+            if not equippedDrinkRef then break end
+            
+            -- Check if animations have stopped and resume idle if needed
+            if not equippedDrinkRef.isDrinking and equippedDrinkRef.progress > 0.0 then
+                -- Check if idle animation is still playing
+                if not IsEntityPlayingAnim(playerPed, equippedDrinkRef.idleDict, equippedDrinkRef.idleAnim, 3) then
+                    -- Animation stopped (e.g., bumped into wall), resume idle
+                    RequestAnimDict(equippedDrinkRef.idleDict)
+                    while not HasAnimDictLoaded(equippedDrinkRef.idleDict) do
+                        Wait(0)
+                    end
+                    TaskPlayAnim(playerPed, equippedDrinkRef.idleDict, equippedDrinkRef.idleAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
+                end
+            elseif equippedDrinkRef.isDrinking then
+                -- Check if drinking animation is still playing
+                if not IsEntityPlayingAnim(playerPed, equippedDrinkRef.drinkAnimDict, equippedDrinkRef.drinkAnim, 3) then
+                    -- Drinking animation stopped, resume it
+                    RequestAnimDict(equippedDrinkRef.drinkAnimDict)
+                    while not HasAnimDictLoaded(equippedDrinkRef.drinkAnimDict) do
+                        Wait(0)
+                    end
+                    TaskPlayAnim(playerPed, equippedDrinkRef.drinkAnimDict, equippedDrinkRef.drinkAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
+                end
+            end
+            
+            -- Show UI controls
+            local progressPercent = math.floor(equippedDrinkRef.progress * 100)
+            local controls = {}
+            
+            if not equippedDrinkRef.isDrinking and equippedDrinkRef.progress > 0.0 then
+                -- Show drink controls with progress bar
+                table.insert(controls, {key = "E", label = "drink_hold_to_drink", progress = progressPercent})
+            elseif equippedDrinkRef.isDrinking then
+                -- Show drinking status with progress bar
+                table.insert(controls, {key = "E", label = "drink_drinking", progress = progressPercent})
+            end
+            
+            -- Send controls to NUI
+            SendNUIMessage({
+                type = "updateControls",
+                controls = controls
+            })
+            
+            -- Check for throw away (ESC, Backspace, or X)
+            -- ESC = 322 (group 0), Backspace = 194 (group 0), X = 73 (group 1 for keyboard)
+            if (IsControlJustPressed(0, 322) or IsControlJustPressed(0, 194) or IsControlJustPressed(1, 323)) and equippedDrinkRef and equippedDrinkRef.progress > 0.0 then
+                -- Throw away the drink
+                equippedDrinkRef.progress = 0.0
+                equippedDrinkRef.isDrinking = false
+                
+                -- Use shared throw away function
+                ThrowAwayDrink(equippedDrinkRef)
+                break
+            end
+            
+            -- Check if E is being held (Control 38)
+            local isHoldingE = IsControlPressed(0, 38) -- E key
+            
+            if isHoldingE and not equippedDrinkRef.isDrinking and equippedDrinkRef.progress > 0.0 then
+                -- Start drinking
+                equippedDrinkRef.isDrinking = true
+                
+                -- Request and play drinking animation
+                RequestAnimDict(equippedDrinkRef.drinkAnimDict)
+                while not HasAnimDictLoaded(equippedDrinkRef.drinkAnimDict) do
+                    Wait(0)
+                end
+                TaskPlayAnim(playerPed, equippedDrinkRef.drinkAnimDict, equippedDrinkRef.drinkAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
+                
+                -- Drink while E is held - continuous smooth draining
+                local drinkStartTime = GetGameTimer()
+                local drinkDuration = 20000 -- 20 seconds to fully drain (100% to 0%)
+                local lastProgressUpdate = GetGameTimer()
+                local lastServerSync = GetGameTimer()
+                local initialProgress = equippedDrinkRef.progress
+                local shouldThrowAway = false
+                local amountConsumed = 0.0 -- Proportion of drink consumed this sip (0-1), for scaled alcohol
+                
+                while IsControlPressed(0, 38) and equippedDrinkRef and equippedDrinkRef.progress > 0.0 do
+                    Wait(0) -- Update every frame for smooth progress bar
+                    
+                    -- Check for ESC (322), Backspace (194), or X (73) to throw away
+                    if IsControlJustPressed(0, 322) or IsControlJustPressed(0, 194) or IsControlJustPressed(0, 73) then
+                        shouldThrowAway = true
+                        amountConsumed = initialProgress - equippedDrinkRef.progress -- Only count what was drunk before throwing
+                        equippedDrinkRef.progress = 0.0 -- Set to empty to trigger throw away
+                        break
+                    end
+                    
+                    local currentTime = GetGameTimer()
+                    local elapsedTime = currentTime - drinkStartTime
+                    
+                    -- Calculate smooth continuous progress based on time elapsed
+                    local progressDrained = math.min(1.0, elapsedTime / drinkDuration)
+                    equippedDrinkRef.progress = math.max(0.0, initialProgress - progressDrained)
+                    
+                    -- Update UI in real-time (every 16ms for ~60fps smooth animation)
+                    if currentTime - lastProgressUpdate >= 16 then
+                        local progressPercent = math.floor(equippedDrinkRef.progress * 100)
+                        SendNUIMessage({
+                            type = "updateControls",
+                            controls = {
+                                {key = "E", label = "drink_drinking", progress = progressPercent}
+                            }
+                        })
+                        lastProgressUpdate = currentTime
+                    end
+                    
+                    -- Sync to server every 200ms for network efficiency
+                    if currentTime - lastServerSync >= 200 then
+                        local currentCoords = GetEntityCoords(playerPed)
+                        TriggerServerEvent("pickle_clubs:syncEquippedDrink", currentCoords, equippedDrinkRef.flavorWeights, equippedDrinkRef.color, equippedDrinkRef.progress)
+                        lastServerSync = currentTime
+                    end
+                    
+                    -- If drink is empty, break and throw away
+                    if equippedDrinkRef.progress <= 0.0 then
+                        break
+                    end
+                end
+                
+                -- Amount consumed this sip (for scaled alcohol): only set if we didn't throw (throw branch already set amountConsumed)
+                if not shouldThrowAway then
+                    amountConsumed = initialProgress - (equippedDrinkRef and equippedDrinkRef.progress or 0.0)
+                end
+                if amountConsumed > 0.0 then
+                    TriggerServerEvent("pickle_clubs:drinkConsumed", amountConsumed)
+                end
+                
+                -- Stop drinking animation and return to idle
+                ClearPedTasks(playerPed)
+                if equippedDrinkRef and equippedDrinkRef.progress > 0.0 then
+                    RequestAnimDict(equippedDrinkRef.idleDict)
+                    while not HasAnimDictLoaded(equippedDrinkRef.idleDict) do
+                        Wait(0)
+                    end
+                    TaskPlayAnim(playerPed, equippedDrinkRef.idleDict, equippedDrinkRef.idleAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
+                end
+                
+                equippedDrinkRef.isDrinking = false
+                
+                -- If drink is empty, throw it away
+                if equippedDrinkRef.progress <= 0.0 then
+                    -- Use shared throw away function
+                    ThrowAwayDrink(equippedDrinkRef)
+                    break
+                end
+            end
+        end
+        
+        -- Hide controls when thread ends
+        SendNUIMessage({
+            type = "updateControls",
+            controls = nil
+        })
+        DrinkingThread = nil
+    end)
+end)
+
+-- Sync equipped drinks from other players
+RegisterNetEvent("pickle_clubs:syncEquippedDrinkUpdate", function(playerId, coords, flavorWeights, color, progress)
+    local localServerId = GetPlayerServerId(PlayerId())
+    if playerId == localServerId then return end -- Don't sync our own drink
+    
+    -- Update or create equipped drink entry
+    EquippedDrinks[playerId] = {
+        coords = coords,
+        flavorWeights = flavorWeights or {},
+        color = color or {255, 255, 255},
+        progress = progress or 1.0,
+        lastUpdate = GetGameTimer()
+    }
+end)
+
+-- Remove equipped drink when player unequips
+RegisterNetEvent("pickle_clubs:removeEquippedDrink", function(playerId)
+    local localServerId = GetPlayerServerId(PlayerId())
+    if playerId == localServerId or playerId == -1 then
+        -- Clean up local equipped drink
+        if PlayerEquippedDrink then
+            if PlayerEquippedDrink.prop and DoesEntityExist(PlayerEquippedDrink.prop) then
+                DeleteEntity(PlayerEquippedDrink.prop)
+            end
+            ClearPedTasks(PlayerPedId())
+            PlayerEquippedDrink = nil
+        end
+        if DrinkingThread then
+            DrinkingThread = nil
+        end
+        -- Hide controls
+        SendNUIMessage({
+            type = "updateControls",
+            controls = nil
+        })
+    end
+    
+    if playerId ~= localServerId and playerId ~= -1 then
+        -- Remove from other players' equipped drinks
+        EquippedDrinks[playerId] = nil
+    elseif playerId == -1 then
+        -- Remove all equipped drinks
+        EquippedDrinks = {}
+    end
+end)
+
+-- Render markers for other players' equipped drinks
+CreateThread(function()
+    while true do
+        local wait = 1500
+        local playerPed = PlayerPedId()
+        local playerCoords = GetEntityCoords(playerPed)
+        local currentTime = GetGameTimer()
+        
+        for playerId, drinkData in pairs(EquippedDrinks) do
+            -- Remove stale entries (older than 5 seconds)
+            if currentTime - (drinkData.lastUpdate or 0) > 5000 then
+                EquippedDrinks[playerId] = nil
+            else
+                local serverId = GetPlayerFromServerId(playerId)
+                if serverId == -1 then
+                    EquippedDrinks[playerId] = nil
+                else
+                    local otherPlayerPed = GetPlayerPed(serverId)
+                    if DoesEntityExist(otherPlayerPed) then
+                        local otherCoords = GetEntityCoords(otherPlayerPed)
+                        local distance = #(playerCoords - otherCoords)
+                        
+                        -- Only render if within render distance
+                        if distance < Config.RenderDistance then
+                            -- Get bone position for right hand
+                            local boneIndex = GetPedBoneIndex(otherPlayerPed, 28422) -- hand_r
+                            local boneCoords = GetWorldPositionOfEntityBone(otherPlayerPed, boneIndex)
+                            
+                            if boneCoords then
+                                wait = 0
+                                local radius = 0.08
+                                local maxHeight = 0.1875
+                                local surfaceHeight = 0.01
+                                local alpha = 128
+                                local drinkProgress = drinkData.progress or 1.0
+                                local height = drinkProgress * maxHeight
+                                local drinkColor = drinkData.color
+                                
+                                -- Calculate up vector from player heading
+                                local playerHeading = GetEntityHeading(otherPlayerPed)
+                                local upVector = vector3(0.0, 0.0, 1.0)
+                                
+                                local renderCoords = boneCoords + (upVector * surfaceHeight)
+                                local surfaceCoords = renderCoords + (upVector * height)
+                                
+                                -- Draw drink markers
+                                DrawMarker(1, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 90.0, 0.0, playerHeading, radius, radius, height, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
+                                DrawMarker(28, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 270.0, 0.0, playerHeading, radius * 0.5, radius * 0.5, 0.001, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
+                                DrawMarker(1, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, 0.0, playerHeading, radius, radius, height, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
+                                DrawMarker(28, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, 0.0, playerHeading, radius * 0.5, radius * 0.5, 0.001, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
+                            end
+                        end
+                    else
+                        -- Player doesn't exist, remove entry
+                        EquippedDrinks[playerId] = nil
+                    end
+                end
+            end
+        end
+        Wait(wait)
+    end
+end)
+
+-- Cleanup on resource stop
+AddEventHandler("onResourceStop", function(resource)
+    if resource == GetCurrentResourceName() then
+        -- Clean up equipped drink
+        if PlayerEquippedDrink then
+            if PlayerEquippedDrink.prop and DoesEntityExist(PlayerEquippedDrink.prop) then
+                DeleteEntity(PlayerEquippedDrink.prop)
+            end
+            ClearPedTasks(PlayerPedId())
+            PlayerEquippedDrink = nil
+        end
+        DrinkingThread = nil
+        
+        -- Clear other players' equipped drinks
+        EquippedDrinks = {}
+    end
 end)

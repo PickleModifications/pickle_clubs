@@ -342,7 +342,7 @@ RegisterNetEvent("pickle_clubs:removeStation", function(stationId)
 end)
 
 RegisterNetEvent("pickle_clubs:stationControlDenied", function(message)
-    ShowNotification("^1" .. (message or "Station is already in use"))
+    ShowNotification("" .. (message or "Station is already in use"))
 end)
 
 -- Request stations on resource start
