@@ -1,8 +1,110 @@
 -- Multi-Station Bartender Server
--- Import station management functions (will be available after management module loads)
+-- Bartender entities are stored in Clubs[id].entities[entityId].
 
--- Per-station data: stationId -> {orderQueue, serviceActive, interactionData, spawnThread, timerThread}
+-- Per-station runtime data: stationId -> {orderQueue, serviceActive, interactionData, spawnThread, timerThread}
 StationData = {}
+StationRegistry = {} -- stationId -> persisted station metadata from club entity
+StationControllers = {} -- stationId -> {interaction = {source=...}, service = {source=...}}
+
+local function BuildStationId(clubId, entityId)
+    return ("%s:%s"):format(clubId, entityId)
+end
+
+local function BuildStationFromEntity(clubId, entityId)
+    local club = Clubs[clubId]
+    if not club then return nil end
+    local entity = club.entities and club.entities[entityId]
+    if not entity or entity.type ~= "bartender" or not entity.bartender then return nil end
+
+    local bartender = entity.bartender
+    local coords = bartender.coords
+    if type(coords) == "table" then
+        coords = vector3(coords.x or coords[1], coords.y or coords[2], coords.z or coords[3])
+    end
+
+    return {
+        id = BuildStationId(clubId, entityId),
+        clubId = clubId,
+        entityId = entityId,
+        coords = coords,
+        heading = bartender.heading or 0.0,
+        blip = bartender.blip or (Config.Bartender.defaultBlip or {
+            name = "Bartending Station",
+            color = 5,
+            sprite = 52,
+            scale = 0.8,
+            visible = true,
+        }),
+        society_name = bartender.society_name,
+        society_percentage = bartender.society_percentage or 0,
+    }
+end
+
+local function RegisterBartenderStation(clubId, entityId)
+    local station = BuildStationFromEntity(clubId, entityId)
+    if not station then return end
+    StationRegistry[station.id] = station
+    TriggerClientEvent("pickle_clubs:syncStations", -1, StationRegistry)
+end
+
+local function UnregisterBartenderStation(clubId, entityId)
+    local stationId = BuildStationId(clubId, entityId)
+    if StationData[stationId] and StationData[stationId].serviceActive then
+        StopBartenderService(stationId)
+    end
+    StationData[stationId] = nil
+    StationControllers[stationId] = nil
+    StationRegistry[stationId] = nil
+    TriggerClientEvent("pickle_clubs:syncStations", -1, StationRegistry)
+    TriggerClientEvent("pickle_clubs:removeStation", -1, stationId)
+end
+
+local function GetStation(stationId)
+    return StationRegistry[stationId]
+end
+
+local function IsStationControlled(stationId, controlType)
+    if not StationControllers[stationId] then return false end
+    if controlType then
+        return StationControllers[stationId][controlType] ~= nil
+    end
+    for _, controller in pairs(StationControllers[stationId]) do
+        if controller then return true end
+    end
+    return false
+end
+
+local function SetStationController(stationId, source, controlType)
+    if not GetStation(stationId) then return false, "Station not found" end
+    if IsStationControlled(stationId, controlType) then
+        return false, "Station is already controlled"
+    end
+    if not StationControllers[stationId] then StationControllers[stationId] = {} end
+    StationControllers[stationId][controlType] = {
+        source = source,
+        type = controlType,
+    }
+    return true
+end
+
+local function ClearStationController(stationId, controlType)
+    if not StationControllers[stationId] then return end
+    if controlType then
+        StationControllers[stationId][controlType] = nil
+        local hasAny = false
+        for _, controller in pairs(StationControllers[stationId]) do
+            if controller then
+                hasAny = true
+                break
+            end
+        end
+        if not hasAny then
+            StationControllers[stationId] = nil
+        end
+    else
+        StationControllers[stationId] = nil
+    end
+end
 
 -- Generate all possible drink item names from configured flavors
 function GenerateAllDrinkItems()
@@ -269,9 +371,7 @@ function ExpireOrder(stationId, orderId)
 end
 
 function StartBartenderService(stationId, coords, heading)
-    -- Check if station exists (use management module exports)
-    
-    local station = exports["pickle_clubs"]:GetStation(stationId)
+    local station = GetStation(stationId)
     if not station then
         print("ERROR: Station " .. stationId .. " not found")
         return false
@@ -376,9 +476,8 @@ end
 -- Events
 RegisterNetEvent("pickle_clubs:startBartenderService", function(stationId, coords, heading)
     local source = source
-    
-    -- Request station control via management module
-    local success, message = exports["pickle_clubs"]:SetStationController(stationId, source, "service")
+
+    local success, message = SetStationController(stationId, source, "service")
     if not success then
         TriggerClientEvent("pickle_clubs:stationControlDenied", source, message or "Station is already in use")
         return
@@ -388,7 +487,7 @@ RegisterNetEvent("pickle_clubs:startBartenderService", function(stationId, coord
         print("Bartender service started by player: " .. source .. " for station: " .. stationId)
     else
         -- Clear controller if service failed to start
-        exports["pickle_clubs"]:ClearStationController(stationId, "service")
+        ClearStationController(stationId, "service")
         TriggerClientEvent("pickle_clubs:stationControlDenied", source, "Failed to start service")
     end
 end)
@@ -397,8 +496,7 @@ RegisterNetEvent("pickle_clubs:stopBartenderService", function(stationId)
     local source = source
     
     if StopBartenderService(stationId) then
-        -- Clear station control via management module
-        exports["pickle_clubs"]:ClearStationController(stationId, "service")
+        ClearStationController(stationId, "service")
         print("Bartender service stopped by player: " .. source .. " for station: " .. stationId)
     end
 end)
@@ -479,8 +577,27 @@ RegisterNetEvent("pickle_clubs:submitDrink", function(stationId, orderId, flavor
     local isValid, message = ValidateDrink(stationId, orderId, flavorWeights)
     
     if isValid then
+        -- Get station data to check for society configuration
+        local station = GetStation(stationId)
+        local orderPayment = Config.Bartender.orderPayment
+        local playerPayment = orderPayment
+        local societyPayment = 0
+        
+        -- Check if society is configured and calculate split payment
+        if station and station.society_name and station.society_name ~= "" and station.society_percentage and station.society_percentage > 0 then
+            -- Calculate society payment
+            societyPayment = math.floor(orderPayment * (station.society_percentage / 100))
+            -- Player gets the remainder
+            playerPayment = orderPayment - societyPayment
+            
+            -- Send payment to society
+            if societyPayment > 0 then
+                AddSocietyMoney(station.society_name, societyPayment)
+            end
+        end
+        
         -- Pay the player
-        AddMoney(source, Config.Bartender.orderPayment, "money")
+        AddMoney(source, playerPayment, "money")
         
         -- Get random feedback message
         local feedbackMessages = Config.Bartender.orderConversations.correct
@@ -490,7 +607,7 @@ RegisterNetEvent("pickle_clubs:submitDrink", function(stationId, orderId, flavor
         ExpireOrder(stationId, orderId)
         
         -- Send success feedback
-        TriggerClientEvent("pickle_clubs:drinkSubmissionResult", source, true, feedback, Config.Bartender.orderPayment)
+        TriggerClientEvent("pickle_clubs:drinkSubmissionResult", source, true, feedback, playerPayment)
     else
         -- Get random feedback message
         ShowNotification(source, message)
@@ -564,12 +681,33 @@ RegisterNetEvent("pickle_clubs:giveDrinkItem", function(itemName, flavorWeights)
     ShowNotification(source, "You received a " .. itemName)
 end)
 
--- Cleanup station data when station is deleted
-RegisterNetEvent("pickle_clubs:stationDeleted", function(stationId)
-    if StationData[stationId] then
-        StopBartenderService(stationId)
-        StationData[stationId] = nil
+RegisterNetEvent("pickle_clubs:setStationController", function(stationId, controlType)
+    local src = source
+    local success, message = SetStationController(stationId, src, controlType)
+    if not success then
+        TriggerClientEvent("pickle_clubs:stationControlDenied", src, message)
+        return
     end
+end)
+
+RegisterNetEvent("pickle_clubs:clearStationController", function(stationId, controlType)
+    ClearStationController(stationId, controlType)
+end)
+
+RegisterNetEvent("pickle_clubs:requestStationControllerStates", function()
+    local src = source
+    for stationId, _ in pairs(StationRegistry) do
+        if IsStationControlled(stationId, "interaction") then
+            TriggerClientEvent("pickle_clubs:hideStationRegister", src, stationId)
+        else
+            TriggerClientEvent("pickle_clubs:showStationRegister", src, stationId)
+        end
+    end
+end)
+
+RegisterNetEvent("pickle_clubs:requestStations", function()
+    local src = source
+    TriggerClientEvent("pickle_clubs:syncStations", src, StationRegistry)
 end)
 
 -- Generate item files on resource start
@@ -641,6 +779,36 @@ end
 
 -- Export function to get all drink items (for item file generation)
 exports("GetAllDrinkItems", GetAllDrinkItems)
+exports("GetStation", GetStation)
+exports("IsStationControlled", IsStationControlled)
+exports("SetStationController", SetStationController)
+exports("ClearStationController", ClearStationController)
+
+CreateThread(function()
+    RegisterEntityType("bartender", {
+        label = "Bartender",
+        description = "Bartending station entity for club gameplay.",
+        onStart = function(id, entityId)
+            RegisterBartenderStation(id, entityId)
+        end,
+        onRender = function(id, entityId, source)
+            local stationId = BuildStationId(id, entityId)
+            local station = StationRegistry[stationId]
+            if station then
+                TriggerClientEvent("pickle_clubs:syncStations", source, {
+                    [stationId] = station
+                }, true)
+            end
+        end,
+        onUnrender = function(id, entityId, source)
+            local stationId = BuildStationId(id, entityId)
+            TriggerClientEvent("pickle_clubs:removeStation", source, stationId)
+        end,
+        onStop = function(id, entityId)
+            UnregisterBartenderStation(id, entityId)
+        end,
+    })
+end)
 
 -- Register all possible drink items and generate item files on resource start
 CreateThread(function()
@@ -730,6 +898,13 @@ AddEventHandler("playerDropped", function()
         EquippedDrinksServer[source] = nil
         TriggerClientEvent("pickle_clubs:removeEquippedDrink", -1, source)
     end
+    for stationId, controllers in pairs(StationControllers) do
+        for controlType, controller in pairs(controllers) do
+            if controller and controller.source == source then
+                ClearStationController(stationId, controlType)
+            end
+        end
+    end
 end)
 
 -- Cleanup all station data on resource stop
@@ -744,6 +919,8 @@ AddEventHandler("onResourceStop", function(resource)
         
         -- Clear all station data
         StationData = {}
+        StationRegistry = {}
+        StationControllers = {}
         
         -- Clear equipped drinks
         EquippedDrinksServer = {}

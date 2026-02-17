@@ -23,6 +23,7 @@ Config.TargetIcons = {
 }
 Config.FrameworkSettings = {
     dirtyMoney = "DEFAULT",
+    society = "qb-management", -- QBCore society system: "qb-management" or "qb-banking"
     usableItemMetadata = function(item, data)
         if type(data) == "table" and data.metadata then return data.metadata end
         if type(item) == "table" and item.metadata then return item.metadata end
@@ -64,6 +65,14 @@ Config.Bartender = {
     },
     orderSpawnInterval = 10, -- Time between new orders in seconds
     orderPayment = 50, -- Payment amount for correct order
+    registerModel = `vw_prop_casino_till`, -- Model used for bartender placement/management gizmo
+    defaultBlip = {
+        name = "Bartending Station",
+        color = 5,
+        sprite = 52,
+        scale = 0.8,
+        visible = true,
+    },
     orderConversations = {
         correct = {
             "Perfect! This is exactly what I ordered!",
@@ -78,20 +87,57 @@ Config.Bartender = {
             "This isn't what I asked for.",
         },
     },
-    Stations = {
-        defaultBlip = {
-            name = "Bartending Station",
-            color = 5,
-            sprite = 52,
-            scale = 0.8,
-            visible = true,
-        },
-        registerModel = `vw_prop_casino_till`, -- Model for gizmo placement
-    },
 }
 
 Config.Drinks = {
     alcoholPerDrink = 1000000,
+}
+
+Config.DrunkEffects = {
+    enabled = true, -- Enable/disable drunk effects system
+    visualEffects = true, -- Enable visual screen effects (blur, distortion, etc.)
+    enableWalkCycles = true, -- Enable drunk walk animations
+    cameraShake = true, -- Enable camera shake effects
+    debug = true, -- Enable debug prints for drunk effects
+    
+    -- Alcohol decay settings
+    decayRate = 0.008, -- Amount of alcohol removed per second (as proportion of alcoholPerDrink)
+    -- With decayRate 0.008: A full drink (1.0) takes ~2.15 minutes to wear off completely
+    -- Adjust this value to make alcohol wear off faster (higher) or slower (lower)
+    decayInterval = 1000, -- How often to decay alcohol (milliseconds)
+    
+    -- Effect thresholds (as proportion of alcoholPerDrink, 0.0 to 1.0+)
+    -- Lower thresholds mean effects start sooner
+    thresholds = {
+        light = 0.05, -- Light effects start (very low threshold)
+        moderate = 0.25, -- Moderate effects start
+        heavy = 0.50, -- Heavy effects start
+        extreme = 0.75, -- Extreme effects start
+    },
+    
+    -- Visual effect intensities (0.0 to 1.0)
+    visualIntensity = {
+        light = 0.15,
+        moderate = 0.35,
+        heavy = 0.55,
+        extreme = 0.75,
+    },
+    
+    -- Camera shake intensities
+    shakeIntensity = {
+        light = 0.15,
+        moderate = 0.35,
+        heavy = 0.55,
+        extreme = 0.75,
+    },
+    
+    -- Walk cycle movement clipsets (GTA V movement styles)
+    walkCycles = {
+        light = "move_m@drunk@moderatedrunk", -- Light drunk walk
+        moderate = "move_m@drunk@moderatedrunk", -- Moderate drunk walk
+        heavy = "move_m@drunk@slightlydrunk", -- Heavy drunk walk
+        extreme = "move_m@drunk@verydrunk", -- Extreme drunk walk
+    },
 }
 
 Config.Peds = {

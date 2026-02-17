@@ -900,66 +900,48 @@ function LoadStation(station)
     
     LoadedStations[station.id] = station
     
-    -- Wait for management module to create entities, then create interaction
-    CreateThread(function()
-        Wait(1000) -- Wait for management module to create entities
-        
-        -- Ensure coords is still vector3
-        local coords = station.coords
-        
-        -- Try to get register entity from management module
-        local registerEntity = GetStationEntity(station.id)
-        if registerEntity and DoesEntityExist(registerEntity) then
-            -- Create interaction using CreateInteraction (supports target and E key)
-            -- Use the register entity model as target
-            local registerModel = GetEntityModel(registerEntity)
-            local interactionIndex = CreateInteraction({
-                label = "Bartending Station",
-                icon = Config.TargetIcons.bartender,
-                coords = coords, -- Use the ensured vector3 coords
-                heading = station.heading or 0.0, -- Provide heading to avoid nil error
-                radius = 1.0,
-                interactRadius = Config.InteractDistance,
-            }, function(selection, targetData)
-                -- Selected callback - check if admin first, then show menu or proceed
-                local stationId = station.id
-                
-                -- Use ox_lib callback to securely check admin status
-                lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
-                    if isAdmin then
-                        -- Admin: show menu to choose between manage or bartend
-                        lib.registerContext({
-                            id = "station_interact_" .. stationId,
-                            title = "Station #" .. stationId,
-                            options = {
-                                {
-                                    title = "Manage Station",
-                                    description = "Edit position, configure blip, or delete",
-                                    onSelect = function()
-                                        exports["pickle_clubs"]:OpenStationManagementMenu(stationId)
-                                    end,
-                                },
-                                {
-                                    title = "Start Bartending",
-                                    description = "Begin bartending at this station",
-                                    onSelect = function()
-                                        TriggerEvent("pickle_clubs:startStationInteraction", {stationId = stationId})
-                                    end,
-                                },
-                            },
-                        })
-                        lib.showContext("station_interact_" .. stationId)
-                    else
-                        -- Not admin: proceed directly to bartending
-                        TriggerEvent("pickle_clubs:startStationInteraction", {stationId = stationId})
-                    end
-                end)
-            end)
-            
-            -- Store interaction index for cleanup
-            StationInteractions[station.id] = interactionIndex
-        end
+    -- Ensure coords is still vector3
+    local coords = station.coords
+
+    local interactionIndex = CreateInteraction({
+        label = "Bartending Station",
+        icon = Config.TargetIcons.bartender,
+        coords = coords,
+        heading = station.heading or 0.0,
+        radius = 1.0,
+        interactRadius = Config.InteractDistance,
+    }, function()
+        local stationId = station.id
+        lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
+            if isAdmin then
+                lib.registerContext({
+                    id = "station_interact_" .. stationId,
+                    title = "Station " .. stationId,
+                    options = {
+                        {
+                            title = "Manage Clubs",
+                            description = "Open club/entity management",
+                            onSelect = function()
+                                TriggerEvent("pickle_clubs:openClubManagement")
+                            end,
+                        },
+                        {
+                            title = "Start Bartending",
+                            description = "Begin bartending at this station",
+                            onSelect = function()
+                                TriggerEvent("pickle_clubs:startStationInteraction", {stationId = stationId})
+                            end,
+                        },
+                    },
+                })
+                lib.showContext("station_interact_" .. stationId)
+            else
+                TriggerEvent("pickle_clubs:startStationInteraction", {stationId = stationId})
+            end
+        end)
     end)
+
+    StationInteractions[station.id] = interactionIndex
 end
 
 -- Start interaction for a station
@@ -1059,34 +1041,30 @@ RegisterNetEvent("pickle_clubs:stationControlDenied", function(message)
 end)
 
 -- Load stations when synced
-RegisterNetEvent("pickle_clubs:syncStations", function(stations)
-    -- Cleanup old interactions
-    for stationId, interactionIndex in pairs(StationInteractions) do
-        if not stations[stationId] then
-            DeleteInteraction(interactionIndex)
-            StationInteractions[stationId] = nil
+RegisterNetEvent("pickle_clubs:syncStations", function(stations, appendOnly)
+    if not appendOnly then
+        for stationId, interactionIndex in pairs(StationInteractions) do
+            if not stations[stationId] then
+                DeleteInteraction(interactionIndex)
+                StationInteractions[stationId] = nil
+                LoadedStations[stationId] = nil
+            end
         end
     end
-    
-    -- Load new/updated stations
-    for stationId, station in pairs(stations) do
+
+    for stationId, station in pairs(stations or {}) do
         -- Ensure coords is vector3 (may come as table from network sync)
         if station.coords and type(station.coords) == "table" then
             station.coords = vector3(station.coords.x or station.coords[1], station.coords.y or station.coords[2], station.coords.z or station.coords[3])
         end
-        
-        -- Only load if not already loaded or if station data changed
-        if not LoadedStations[stationId] or (LoadedStations[stationId].coords and station.coords and LoadedStations[stationId].coords ~= station.coords) then
-            -- Cleanup old interaction if exists
-            if StationInteractions[stationId] then
-                DeleteInteraction(StationInteractions[stationId])
-                StationInteractions[stationId] = nil
-            end
-            LoadStation(station)
+
+        if StationInteractions[stationId] then
+            DeleteInteraction(StationInteractions[stationId])
+            StationInteractions[stationId] = nil
         end
+        LoadStation(station)
     end
-    
-    -- Request current controller state to sync register visibility
+
     TriggerServerEvent("pickle_clubs:requestStationControllerStates")
 end)
 
@@ -1107,8 +1085,40 @@ RegisterNetEvent("pickle_clubs:removeStation", function(stationId)
     end
 end)
 
--- Register visibility is handled by management/client.lua
--- The server syncs visibility state via events when controllers change
+CreateThread(function()
+    RegisterEntityType("bartender", {
+        label = "Bartender",
+        description = "Bartending station entity type.",
+        onRender = function(id, entityId)
+            local club = Clubs[id]
+            if not club then return end
+            local entity = club.entities and club.entities[entityId]
+            if not entity or entity.type ~= "bartender" or not entity.bartender then return end
+            local coords = entity.bartender.coords
+            if type(coords) == "table" then
+                coords = vector3(coords.x or coords[1], coords.y or coords[2], coords.z or coords[3])
+            end
+            LoadStation({
+                id = ("%s:%s"):format(id, entityId),
+                coords = coords,
+                heading = entity.bartender.heading or 0.0,
+                blip = entity.bartender.blip,
+                clubId = id,
+                entityId = entityId,
+                society_name = entity.bartender.society_name,
+                society_percentage = entity.bartender.society_percentage or 0,
+            })
+        end,
+        onUnrender = function(id, entityId)
+            local stationId = ("%s:%s"):format(id, entityId)
+            LoadedStations[stationId] = nil
+            if StationInteractions[stationId] then
+                DeleteInteraction(StationInteractions[stationId])
+                StationInteractions[stationId] = nil
+            end
+        end
+    })
+end)
 
 -- Hook into StopInteraction to cleanup all bartender-related state
 -- Note: Register visibility is handled by server event (pickle_clubs:showStationRegister)

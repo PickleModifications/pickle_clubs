@@ -158,8 +158,7 @@ function AddAlcohol(source, amount)
     if not amount or amount <= 0 then return end
     local Player = QBCore.Functions.GetPlayer(tonumber(source))
     if not Player then return end
-    local current = Player.PlayerData.metadata and Player.PlayerData.metadata["drunk"] or 0
-    Player.Functions.SetMetaData("drunk", current + amount)
+    TriggerClientEvent("pickle_clubs:addAlcohol", source, amount)
 end
 
 function AddSocietyMoney(name, amount)
@@ -187,6 +186,8 @@ CreateThread(function()
         local xPlayer = QBCore.Functions.GetPlayer(tonumber(source))
         local weight = QBCore.Player.GetTotalWeight(xPlayer.PlayerData.items)
         local item = QBCore.Shared.Items[name:lower()]
+        if not item then return true end -- QBX Compatibility
+        if not QBCore.Config or not QBCore.Config.Player or not QBCore.Config.Player.MaxWeight then return true end -- QBX Compatibility
         return ((weight + (item.weight * count)) <= QBCore.Config.Player.MaxWeight)
     end
 

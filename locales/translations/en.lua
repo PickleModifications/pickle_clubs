@@ -29,4 +29,5 @@ Language["en"] = {
     drink_drinking = "Drinking...",
     drink_progress = "%s%%",
     drink_throw_away = "Throw Away",
+    controls_exit = "Return to Game",
 }
