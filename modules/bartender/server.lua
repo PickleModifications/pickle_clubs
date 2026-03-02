@@ -10,6 +10,16 @@ local function BuildStationId(clubId, entityId)
     return ("%s:%s"):format(clubId, entityId)
 end
 
+local function GetPrimaryJobName(club)
+    local jobs = club and club.jobs or {}
+    for i = 1, #jobs do
+        if jobs[i].primary and type(jobs[i].name) == "string" and jobs[i].name ~= "" then
+            return jobs[i].name
+        end
+    end
+    return nil
+end
+
 local function BuildStationFromEntity(clubId, entityId)
     local club = Clubs[clubId]
     if not club then return nil end
@@ -35,8 +45,8 @@ local function BuildStationFromEntity(clubId, entityId)
             scale = 0.8,
             visible = true,
         }),
-        society_name = bartender.society_name,
-        society_percentage = bartender.society_percentage or 0,
+        society_name = GetPrimaryJobName(club),
+        society_percentage = club.society_percentage or 0,
     }
 end
 

@@ -5,6 +5,7 @@ BartenderServiceActive = {} -- stationId -> boolean
 SubmittedDrinks = {} -- Track which drinks have been submitted
 LoadedStations = {} -- stationId -> station data
 StationInteractions = {} -- stationId -> interactionIndex
+StationRegisterProps = {} -- stationId -> register prop entity (visible for all clients)
 
 -- Equipped drinks system
 EquippedDrinks = {} -- playerId -> {prop, flavorWeights, color, progress, thread}
@@ -889,6 +890,15 @@ end
 -- Store interaction indices for stations
 StationInteractions = {} -- stationId -> interactionIndex
 
+local function CreateStationRegisterProp(coords, heading)
+    local model = Config.Bartender.registerModel or `vw_prop_casino_till`
+    local prop = CreateProp(model, coords.x, coords.y, coords.z, false, false, false)
+    if not prop or not DoesEntityExist(prop) then return nil end
+    SetEntityCollision(prop, true, true)
+    SetEntityHeading(prop, heading)
+    return prop
+end
+
 -- Load station and create interaction
 function LoadStation(station)
     if not station then return end
@@ -900,6 +910,16 @@ function LoadStation(station)
     
     LoadedStations[station.id] = station
     
+    -- Cleanup existing interaction and register prop if they exist
+    if StationInteractions[station.id] then
+        DeleteInteraction(StationInteractions[station.id])
+        StationInteractions[station.id] = nil
+    end
+    if StationRegisterProps[station.id] and DoesEntityExist(StationRegisterProps[station.id]) then
+        DeleteEntity(StationRegisterProps[station.id])
+        StationRegisterProps[station.id] = nil
+    end
+
     -- Ensure coords is still vector3
     local coords = station.coords
 
@@ -919,33 +939,45 @@ function LoadStation(station)
                     title = "Station " .. stationId,
                     options = {
                         {
-                            title = "Manage Clubs",
-                            description = "Open club/entity management",
+                            title = "Manage",
+                            description = "Open this station's management menu",
                             onSelect = function()
-                                TriggerEvent("pickle_clubs:openClubManagement")
+                                local clubIdStr, entityId = stationId:match("^(%d+):(.+)$")
+                                if clubIdStr and entityId then
+                                    local clubId = tonumber(clubIdStr)
+                                    OpenClubManagementNuiForEntity(clubId, entityId)
+                                else
+                                    OpenClubManagementNui()
+                                end
                             end,
                         },
                         {
                             title = "Start Bartending",
                             description = "Begin bartending at this station",
                             onSelect = function()
-                                TriggerEvent("pickle_clubs:startStationInteraction", {stationId = stationId})
+                                StartStationInteraction({stationId = stationId})
                             end,
                         },
                     },
                 })
                 lib.showContext("station_interact_" .. stationId)
             else
-                TriggerEvent("pickle_clubs:startStationInteraction", {stationId = stationId})
+                StartStationInteraction({stationId = stationId})
             end
         end)
     end)
 
     StationInteractions[station.id] = interactionIndex
+
+    -- Render register model for all clients so the station location is visible
+    local heading = station.heading or 0.0
+    local registerProp = CreateStationRegisterProp(coords, heading)
+    if registerProp then
+        StationRegisterProps[station.id] = registerProp
+    end
 end
 
--- Start interaction for a station
-RegisterNetEvent("pickle_clubs:startStationInteraction", function(data)
+function StartStationInteraction(data)
     local stationId = data and data.stationId or data
     if not stationId or not LoadedStations[stationId] then 
         ShowNotification("Station not found")
@@ -953,7 +985,13 @@ RegisterNetEvent("pickle_clubs:startStationInteraction", function(data)
     end
     
     local station = LoadedStations[stationId]
-    
+
+    -- Hide persistent register prop while bartending (interactive register will be shown)
+    if StationRegisterProps[stationId] and DoesEntityExist(StationRegisterProps[stationId]) then
+        DeleteEntity(StationRegisterProps[stationId])
+        StationRegisterProps[stationId] = nil
+    end
+
     -- Check if station is already controlled
     TriggerServerEvent("pickle_clubs:setStationController", stationId, "interaction")
     
@@ -967,6 +1005,11 @@ RegisterNetEvent("pickle_clubs:startStationInteraction", function(data)
             CreateStationInteraction(station)
         end
     end)
+end
+
+-- Start interaction for a station
+RegisterNetEvent("pickle_clubs:startStationInteraction", function(data)
+    StartStationInteraction(data)
 end)
 
 
@@ -1048,6 +1091,10 @@ RegisterNetEvent("pickle_clubs:syncStations", function(stations, appendOnly)
                 DeleteInteraction(interactionIndex)
                 StationInteractions[stationId] = nil
                 LoadedStations[stationId] = nil
+                if StationRegisterProps[stationId] and DoesEntityExist(StationRegisterProps[stationId]) then
+                    DeleteEntity(StationRegisterProps[stationId])
+                    StationRegisterProps[stationId] = nil
+                end
             end
         end
     end
@@ -1071,13 +1118,18 @@ end)
 -- Handle station removal
 RegisterNetEvent("pickle_clubs:removeStation", function(stationId)
     LoadedStations[stationId] = nil
-    
+
+    if StationRegisterProps[stationId] and DoesEntityExist(StationRegisterProps[stationId]) then
+        DeleteEntity(StationRegisterProps[stationId])
+        StationRegisterProps[stationId] = nil
+    end
+
     -- Delete interaction if it exists
     if StationInteractions[stationId] then
         DeleteInteraction(StationInteractions[stationId])
         StationInteractions[stationId] = nil
     end
-    
+
     -- If currently interacting with this station, stop interaction
     if CURRENT_INTERACTION and CURRENT_INTERACTION.stationId == stationId then
         StopInteraction()
@@ -1098,6 +1150,13 @@ CreateThread(function()
             if type(coords) == "table" then
                 coords = vector3(coords.x or coords[1], coords.y or coords[2], coords.z or coords[3])
             end
+            local primaryJobName = nil
+            for _, j in ipairs(club.jobs or {}) do
+                if j.primary and type(j.name) == "string" and j.name ~= "" then
+                    primaryJobName = j.name
+                    break
+                end
+            end
             LoadStation({
                 id = ("%s:%s"):format(id, entityId),
                 coords = coords,
@@ -1105,8 +1164,8 @@ CreateThread(function()
                 blip = entity.bartender.blip,
                 clubId = id,
                 entityId = entityId,
-                society_name = entity.bartender.society_name,
-                society_percentage = entity.bartender.society_percentage or 0,
+                society_name = primaryJobName,
+                society_percentage = club.society_percentage or 0,
             })
         end,
         onUnrender = function(id, entityId)
@@ -1162,6 +1221,20 @@ AddEventHandler("pickle_clubs:stopInteraction", function()
         
         -- Clear station controller
         TriggerServerEvent("pickle_clubs:clearStationController", stationId, "interaction")
+
+        -- Recreate persistent register prop for all clients to see
+        local station = LoadedStations[stationId]
+        if station and station.coords and not StationRegisterProps[stationId] then
+            local coords = station.coords
+            if type(coords) == "table" then
+                coords = vector3(coords.x or coords[1], coords.y or coords[2], coords.z or coords[3])
+            end
+            local heading = station.heading or 0.0
+            local prop = CreateStationRegisterProp(coords, heading)
+            if prop then
+                StationRegisterProps[stationId] = prop
+            end
+        end
     end
 end)
 
@@ -1171,12 +1244,15 @@ CreateThread(function()
     while true do
         Wait(5000) -- Check every 5 seconds
         
-        -- Cleanup interactions for stations that no longer exist
+        -- Cleanup interactions and register props for stations that no longer exist
         for stationId, interactionIndex in pairs(StationInteractions) do
             if not LoadedStations[stationId] then
-                -- Station no longer exists, cleanup interaction
                 DeleteInteraction(interactionIndex)
                 StationInteractions[stationId] = nil
+                if StationRegisterProps[stationId] and DoesEntityExist(StationRegisterProps[stationId]) then
+                    DeleteEntity(StationRegisterProps[stationId])
+                    StationRegisterProps[stationId] = nil
+                end
             end
         end
     end
@@ -1190,7 +1266,15 @@ AddEventHandler("onResourceStop", function(resource)
             DeleteInteraction(interactionIndex)
         end
         StationInteractions = {}
-        
+
+        -- Cleanup persistent register props
+        for sid, prop in pairs(StationRegisterProps) do
+            if prop and DoesEntityExist(prop) then
+                DeleteEntity(prop)
+            end
+        end
+        StationRegisterProps = {}
+
         -- Cleanup all NPCs
         for stationId, stationNPCs in pairs(OrderNPCs) do
             if stationNPCs then

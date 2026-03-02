@@ -2,6 +2,8 @@ import { Config, useConfig } from "./providers/config";
 import { Translate } from "./providers/locale/Locale";
 import { InteractiveEntityDisplay } from "./components/InteractiveEntityDisplay";
 import { OrderDisplay } from "./components/OrderDisplay";
+import { ClubManagement } from "./components/club/ClubManagement";
+import { InteractText } from "./components/InteractText";
 import { useNuiEvent } from "./providers/nui/useNui";
 import { useState } from "react";
 
@@ -83,6 +85,8 @@ function App() {
       {controls && controls.length > 0 && <AppControls controls={controls} />}
       <InteractiveEntityDisplay />
       <OrderDisplay />
+      <ClubManagement />
+      <InteractText />
     </div>
   )
 }

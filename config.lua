@@ -21,9 +21,15 @@ Config.AdminGroups = {
 Config.TargetIcons = {
     bartender = "fas fa-cocktail",
 }
+
+-- Society entity: model used for placement/management gizmo (optional prop at interaction point)
+Config.Society = {
+    model = `prop_atm_01`, -- e.g. prop_atm_01, vw_prop_casino_till
+}
+
 Config.FrameworkSettings = {
     dirtyMoney = "DEFAULT",
-    society = "qb-management", -- QBCore society system: "qb-management" or "qb-banking"
+    society = "qb-management", -- QBCore society system: "qb-management" or "qb-banking". ESX uses esx_addonaccount.
     usableItemMetadata = function(item, data)
         if type(data) == "table" and data.metadata then return data.metadata end
         if type(item) == "table" and item.metadata then return item.metadata end

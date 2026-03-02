@@ -30,4 +30,8 @@ Language["en"] = {
     drink_progress = "%s%%",
     drink_throw_away = "Throw Away",
     controls_exit = "Return to Game",
+    balance = "Balance",
+    no_access = "No access",
+    deposit_success = "Deposited successfully",
+    withdraw_success = "Withdrawn successfully",
 }

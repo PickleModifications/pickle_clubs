@@ -1,4 +1,5 @@
 local Bouncers = {}
+local BouncerInteractions = {} -- [clubId][entityId] -> interactionIndex
 local ClosestBouncer = nil
 local ThrowOutScenes = {}
 local PLAYING_BOUNCER_SCENE = false
@@ -16,23 +17,23 @@ function ThrowOutPlayerScene(clubId, entityId, id)
         entityId = entityId,
         entities = {},
     }
-    local heading = clubEntry.line.heading - 90.0
+    local heading = clubEntry.eject.heading
     local baseY = 0.5
-    local ped = CreateClubNPC("bouncer_1", clubEntry.line.coords + (clubEntry.line.forward * baseY) + (clubEntry.line.right * -0.3), heading + 290.0)
+    local ped = CreateClubNPC("bouncer_1", clubEntry.eject.coords + (clubEntry.eject.forward * baseY) + (clubEntry.eject.right * -0.3), heading + 290.0)
     FreezeEntityPosition(ped, false)
     table.insert(ThrowOutScenes[id].entities, ped)
     PlayAnim(ThrowOutScenes[id].entities[1], "mini@strip_club@throwout_d@", "throwout_d_bouncer_a", 8.0, -1.0, -1, 1, 0, true, true, true)
     if id == GetPlayerServerId(PlayerId()) then
         PLAYING_BOUNCER_SCENE = true
-        local camCoords = clubEntry.line.coords + (clubEntry.line.right * 6.0)
+        local camCoords = clubEntry.eject.coords + (clubEntry.eject.forward * 6.0)
         CreateScriptedCamera()
         SetCamParams(CurrentCamera, camCoords.x, camCoords.y, camCoords.z + 0.5,
             0.0, 0.0, heading + 180.0, 45.0, 
             0, 0, 0, 2
         )
         SetEntityNoCollisionEntity(PlayerPedId(), ped)
-        SetEntityCoords(PlayerPedId(), clubEntry.line.coords + (clubEntry.line.right * -0.2))
-        SetEntityRotation(PlayerPedId(), 0.0, 0.0, heading - 10.0, 2, true)
+        SetEntityCoords(PlayerPedId(), clubEntry.eject.coords + (clubEntry.eject.right * 0.1))
+        SetEntityRotation(PlayerPedId(), 0.0, 0.0, heading - 12.0, 2, true)
         PlayAnim(PlayerPedId(), "mini@strip_club@throwout_d@", "throwout_d_victim", 8.0, -1.0, -1, 0, 0, true, true, true)
         SetTimeout(4000, function()
             ExitScriptedCamera()
@@ -59,6 +60,14 @@ end
 
 function RenderBouncer(id, entityId)
     if not Bouncers[id] then Bouncers[id] = {} end
+    if not BouncerInteractions[id] then BouncerInteractions[id] = {} end
+    
+    -- Cleanup existing interaction if it exists
+    if BouncerInteractions[id][entityId] then
+        DeleteInteraction(BouncerInteractions[id][entityId])
+        BouncerInteractions[id][entityId] = nil
+    end
+    
     local club = Clubs[id]
     if not club then return end
     local entity = club.entities[entityId]
@@ -73,13 +82,32 @@ function RenderBouncer(id, entityId)
     -- TODO entry.doors
     -- TODO entry.bouncer
     -- TODO entry.line
-    entry.interact = CreateInteraction({
-        label = _L("enter_line"),
+    local interactionIndex = CreateInteraction({
+        label = "Bouncer",
         coords = entity.bouncer.coords + vector3(0.0, 0.0, 1.0), 
         heading = entity.bouncer.heading,
     }, function()
-        PromptCEL(id, entityId)
+        lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
+            if isAdmin then
+                local contextId = ("bouncer_interact_%s_%s"):format(id, entityId)
+                lib.registerContext({
+                    id = contextId,
+                    title = "Bouncer Interaction",
+                    options = {
+                        {
+                            title = "Manage",
+                            description = "Open this entity's management menu",
+                            onSelect = function()
+                                OpenClubManagementNuiForEntity(id, entityId)
+                            end,
+                        },
+                    },
+                })
+                lib.showContext(contextId)
+            end
+        end)
     end)
+    BouncerInteractions[id][entityId] = interactionIndex
     entry.bouncer.ped = CreateClubNPC(entity.bouncer.ped, entity.bouncer.coords, entity.bouncer.heading)
     Bouncers[id][entityId] = entry
 end
@@ -93,6 +121,10 @@ function UnrenderBouncer(id, entityId)
     local entry = Bouncers[id][entityId]
     if DoesEntityExist(entry.bouncer.ped) then
         DeleteEntity(entry.bouncer.ped)
+    end
+    if BouncerInteractions[id] and BouncerInteractions[id][entityId] then
+        DeleteInteraction(BouncerInteractions[id][entityId])
+        BouncerInteractions[id][entityId] = nil
     end
     Bouncers[id][entityId] = nil
     print("Unregistered Bouncer: " .. entityId .. " for club: " .. id)
@@ -218,6 +250,7 @@ CreateThread(function()
                 local dist = #(pcoords - entity.bouncer.coords)
                 if not closest or dist < closest.dist then
                     closest = {
+                        dist = dist,
                         clubId = k,
                         entityId = entityId,
                     }

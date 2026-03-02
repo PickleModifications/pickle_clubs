@@ -1,5 +1,3 @@
-# pickle_policejob
+# pickle_clubs
 
-Please follow the installation steps here: https://docs.picklemods.com/paid-resources/police-job/installation
-
-Need help? Join the discord here: https://discord.gg/picklemods
+NUI (in-game UI) is built from **web/**. To build the NUI: run `npm run build` (or `npm run dev`) from the `web/` directory; output is written to `nui/`. The **old_web/** folder is reference only and is not used for building.

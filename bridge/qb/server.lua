@@ -138,6 +138,12 @@ function GetPlayerJob(source)
     return {label = xPlayer.PlayerData.job.label, rank_label = xPlayer.PlayerData.job.grade.name}
 end
 
+function GetPlayerJobName(source)
+    local xPlayer = QBCore.Functions.GetPlayer(tonumber(source))
+    if not xPlayer or not xPlayer.PlayerData or not xPlayer.PlayerData.job then return nil end
+    return xPlayer.PlayerData.job.name
+end
+
 function SetPlayerJob(source, job, grade)
     local xPlayer = QBCore.Functions.GetPlayer(tonumber(source))
     xPlayer.Functions.SetJob(job, grade)
@@ -167,6 +173,32 @@ function AddSocietyMoney(name, amount)
     else
         exports["qb-banking"]:AddMoney(name, amount)
     end
+end
+
+function GetSocietyBalance(name, cb)
+    if type(cb) ~= "function" then return end
+    local system = Config.FrameworkSettings.society or "qb-management"
+    if system == "qb-management" then
+        local ok, balance = pcall(function()
+            return exports["qb-management"]:GetAccount(name) or 0
+        end)
+        cb(ok and balance or 0)
+    else
+        local ok, balance = pcall(function()
+            return exports["qb-banking"]:GetAccount(name) or 0
+        end)
+        cb(ok and balance or 0)
+    end
+end
+
+function RemoveSocietyMoney(name, amount, cb)
+    local system = Config.FrameworkSettings.society or "qb-management"
+    if system == "qb-management" then
+        exports["qb-management"]:RemoveMoney(name, amount)
+    else
+        exports["qb-banking"]:RemoveMoney(name, amount)
+    end
+    if type(cb) == "function" then cb() end
 end
 
 -- Inventory Fallback

@@ -1,3 +1,3 @@
-# shadcn/ui + vite + Tailwind v3
+# pickle_clubs NUI
 
-A template for a React + TypeScript + Vite + Tailwind v3 project.
+This is the canonical NUI source for the pickle_clubs resource. Build output goes to `nui/` (run `npm run build` from this directory). The **old_web/** folder in the resource is reference only; all club UI is implemented here.

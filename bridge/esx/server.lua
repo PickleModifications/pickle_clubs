@@ -122,6 +122,12 @@ function GetPlayerJob(source)
     return {label = xPlayer.job.label, rank_label = xPlayer.job.grade_label}
 end
 
+function GetPlayerJobName(source)
+    local xPlayer = ESX.GetPlayerFromId(tonumber(source))
+    if not xPlayer or not xPlayer.job then return nil end
+    return xPlayer.job.name
+end
+
 function SetPlayerJob(source, job, grade)
     local xPlayer = ESX.GetPlayerFromId(tonumber(source))
     if not xPlayer then return end
@@ -148,6 +154,23 @@ end
 function AddSocietyMoney(name, amount)
     TriggerEvent('esx_addonaccount:getSharedAccount', "society_"..name, function(account)
         account.addMoney(amount)
+    end)
+end
+
+function GetSocietyBalance(name, cb)
+    if type(cb) ~= "function" then return end
+    TriggerEvent('esx_addonaccount:getSharedAccount', "society_"..name, function(account)
+        cb(account and account.money or 0)
+    end)
+end
+
+function RemoveSocietyMoney(name, amount, cb)
+    cb = (type(cb) == "function") and cb or function() end
+    TriggerEvent('esx_addonaccount:getSharedAccount', "society_"..name, function(account)
+        if account then
+            account.removeMoney(amount)
+        end
+        cb()
     end)
 end
 

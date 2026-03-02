@@ -1,5 +1,37 @@
 inGizmo = false
 
+local function CleanupGizmoEntity(entity)
+    if entity and DoesEntityExist(entity) then
+        DeleteEntity(entity)
+    end
+end
+
+local function ResolveGizmoModel(model)
+    if type(model) == "number" then
+        return model
+    end
+    if type(model) == "string" then
+        return GetHashKey(model)
+    end
+    return nil
+end
+
+local function CreateGizmoPed(model, coords, rotation)
+    local modelHash = ResolveGizmoModel(model)
+    if not modelHash then return nil end
+    if not IsModelInCdimage(modelHash) then return nil end
+    RequestModel(modelHash)
+    while not HasModelLoaded(modelHash) do
+        Wait(0)
+    end
+    local ped = CreatePed(4, modelHash, coords.x, coords.y, coords.z, rotation.z or 0.0, false, false)
+    SetEntityInvincible(ped, true)
+    SetBlockingOfNonTemporaryEvents(ped, true)
+    SetEntityAsMissionEntity(ped, true, true)
+    SetModelAsNoLongerNeeded(modelHash)
+    return ped
+end
+
 function StartMovement(prop, data)
     local coords = GetEntityCoords(PlayerPedId())
     local heading = 0.0
@@ -8,16 +40,18 @@ function StartMovement(prop, data)
     SetEntityCollision(prop, false, false)
     local isFrozen = false
     local rerenderTimer = 300
+    local coordsOffset = data.coordsOffset or vector3(0.0, 0.0, 0.0)
+    local rotationOffset = data.rotationOffset or vector3(0.0, 0.0, 0.0)
     while true do
         local speedMode = 1
         local hit, hitCoords, entity = GetDirectionCoords()
         if hit and hitCoords then 
             if not isFrozen then
-                coords = vector3(hitCoords.x, hitCoords.y, hitCoords.z)
+                coords = vector3(hitCoords.x, hitCoords.y, hitCoords.z + coordsOffset.z)
                 heading = GetGameplayCamRot(2).z
-                SetEntityCoords(prop, coords.x, coords.y, coords.z)
+                SetEntityCoords(prop, coords.x + coordsOffset.x, coords.y + coordsOffset.y, coords.z)
                 if not data.keepRotation then
-                    SetEntityRotation(prop, 0, 0, heading + (data.rotationOffset or 0.0), 2) 
+                    SetEntityRotation(prop, rotationOffset.x, rotationOffset.y, heading + rotationOffset.z, 2) 
                 end
             end
         end
@@ -35,7 +69,7 @@ function StartMovement(prop, data)
         end
         if data.enableCancel and (IsControlJustPressed(1, 202)) then
             if data.deleteEntity then
-                DeleteScriptObject(prop)
+                CleanupGizmoEntity(prop)
             end
             return nil
         end
@@ -45,12 +79,12 @@ function StartMovement(prop, data)
                 if IsControlPressed(1, 15) then
                     heading = heading + (1.0 * speedMode)
                     if heading > 360.0 then heading = (360.0 - heading) end
-                    SetEntityRotation(prop, 0.0, 0.0, heading + (data.rotationOffset or 0.0), 2, true)
+                    SetEntityRotation(prop, rotationOffset.x, rotationOffset.y, heading + rotationOffset.z, 2, true)
                     hasSetHeading = true
                 elseif IsControlPressed(1, 14) then
                     heading = heading - (1.0 * speedMode)
                     if heading < 0.0 then heading = (360.0 + heading) end
-                    SetEntityRotation(prop, 0.0, 0.0, heading + (data.rotationOffset or 0.0), 2, true)
+                    SetEntityRotation(prop, rotationOffset.x, rotationOffset.y, heading + rotationOffset.z, 2, true)
                     hasSetHeading = true
                 end
             end
@@ -63,7 +97,7 @@ function StartMovement(prop, data)
                 coords = coords - forwardVector * ((GetDisabledControlNormal(0, 2) * 0.02) * speedMode)
                 coords = coords + rightVector * ((GetDisabledControlNormal(0, 1) * 0.02) * speedMode)
             end
-            SetEntityCoords(prop, coords.x, coords.y, coords.z)
+            SetEntityCoords(prop, coords.x + coordsOffset.x, coords.y + coordsOffset.y, coords.z + coordsOffset.z)
             -- if IsControlPressed(1, 172) then
             --     coords = coords + forwardVector * (0.005 * speedMode)
             --     SetEntityCoords(prop, coords.x, coords.y, coords.z)
@@ -88,11 +122,11 @@ function StartMovement(prop, data)
         Wait(0) 
     end
     if data.deleteEntity then
-        DeleteScriptObject(prop)
+        CleanupGizmoEntity(prop)
     end
     return {
-        position = coords,
-        rotation = vector3(0.0, 0.0, heading + (data.rotationOffset or 0.0)),
+        position = coords - coordsOffset,
+        rotation = vector3(0.0, 0.0, heading),
     }
 end
 
@@ -208,11 +242,19 @@ function StartGizmoEditor(data)
         inGizmo = false
         return result
     else
-        gizmoEntity = CreateProp(data.model, coords.x, coords.y, coords.z, false, false, false)
+        if data.isPed then
+            gizmoEntity = CreateGizmoPed(data.model, coords, rotation)
+        else
+            gizmoEntity = CreateProp(data.model, coords.x, coords.y, coords.z, false, false, false)
+        end
+        if not gizmoEntity or not DoesEntityExist(gizmoEntity) then
+            inGizmo = false
+            return nil
+        end
         SetEntityRotation(gizmoEntity, rotation.x, rotation.y, rotation.z, 2, true)
         SetEntityCollision(gizmoEntity, false, false)
         local result = StartMovement(gizmoEntity, data)
-        DeleteScriptObject(gizmoEntity)
+        CleanupGizmoEntity(gizmoEntity)
         gizmoEntity = nil
         inGizmo = false
         return result

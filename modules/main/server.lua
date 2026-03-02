@@ -42,11 +42,25 @@ local function NormalizeFromDb(value)
     return output
 end
 
+local function NormalizeJobs(jobs)
+    if type(jobs) ~= "table" then return {} end
+    local out = {}
+    for i = 1, #jobs do
+        local j = jobs[i]
+        if type(j) == "table" and type(j.name) == "string" and j.name ~= "" then
+            out[#out + 1] = { name = j.name, primary = j.primary == true }
+        end
+    end
+    return out
+end
+
 local function BuildClubPacket(data)
     return {
         label = data.label,
         description = data.description,
         coords = data.coords,
+        society_percentage = data.society_percentage and tonumber(data.society_percentage) or 0,
+        jobs = NormalizeJobs(data.jobs or {}),
         entities = data.entities or {},
     }
 end
@@ -80,9 +94,6 @@ local function ValidateEntityData(entityType, entityData)
         if type(bartender.heading) ~= "number" then
             return false, "Bartender heading is required"
         end
-        if bartender.society_percentage ~= nil then
-            bartender.society_percentage = math.max(0, math.min(100, tonumber(bartender.society_percentage) or 0))
-        end
         return true
     end
 
@@ -105,9 +116,9 @@ local function ValidateEntityData(entityType, entityData)
 
     if entityType == "club_entry" then
         local bouncer = entityData.bouncer
-        local line = entityData.line
-        if type(bouncer) ~= "table" or type(line) ~= "table" then
-            return false, "Club entry requires bouncer and line settings"
+        local eject = entityData.eject
+        if type(bouncer) ~= "table" or type(eject) ~= "table" then
+            return false, "Club entry requires bouncer and eject settings"
         end
         if not IsVectorLike(bouncer.coords) or type(bouncer.heading) ~= "number" then
             return false, "Club entry bouncer coords/heading are required"
@@ -115,11 +126,22 @@ local function ValidateEntityData(entityType, entityData)
         if type(bouncer.ped) ~= "string" or bouncer.ped == "" then
             return false, "Club entry bouncer ped id is required"
         end
-        if not IsVectorLike(line.coords) or type(line.heading) ~= "number" then
-            return false, "Club entry line coords/heading are required"
+        if not IsVectorLike(eject.coords) or type(eject.heading) ~= "number" then
+            return false, "Club entry eject coords/heading are required"
         end
-        if line.direction ~= "forward" and line.direction ~= "backward" then
-            line.direction = "forward"
+        return true
+    end
+
+    if entityType == "society" then
+        local society = entityData.society
+        if type(society) ~= "table" then
+            return false, "Missing society settings"
+        end
+        if not IsVectorLike(society.coords) then
+            return false, "Society coords are required"
+        end
+        if type(society.heading) ~= "number" then
+            return false, "Society heading is required"
         end
         return true
     end
@@ -205,12 +227,16 @@ end
 
 function CreateClub(data, cb)
     local payloadCoords = NormalizeForDb(data.coords)
+    local jobs = NormalizeJobs(data.jobs or {})
+    local jobsJson = json.encode(jobs)
     MySQL.Async.insert(
-        "INSERT INTO pickle_clubs (label, description, coords) VALUES (@label, @description, @coords)",
+        "INSERT INTO pickle_clubs (label, description, coords, society_percentage, jobs) VALUES (@label, @description, @coords, @society_percentage, @jobs)",
         {
             ["@label"] = data.label,
             ["@description"] = data.description or "",
             ["@coords"] = json.encode(payloadCoords),
+            ["@society_percentage"] = tonumber(data.society_percentage) or 0,
+            ["@jobs"] = jobsJson,
         },
         function(insertId)
             if not insertId then
@@ -222,11 +248,21 @@ function CreateClub(data, cb)
                 label = data.label,
                 description = data.description or "",
                 coords = data.coords,
+                society_percentage = tonumber(data.society_percentage) or 0,
+                jobs = jobs,
                 entities = {},
             }, false)
             if cb then cb(true, insertId) end
         end
     )
+end
+
+local function CountPrimaryJobs(jobs)
+    local n = 0
+    for i = 1, #(jobs or {}) do
+        if jobs[i].primary then n = n + 1 end
+    end
+    return n
 end
 
 function UpdateClub(id, data, cb)
@@ -235,24 +271,35 @@ function UpdateClub(id, data, cb)
         if cb then cb(false, "Club not found") end
         return
     end
+    local jobs = (data.jobs ~= nil) and NormalizeJobs(data.jobs) or club.jobs
+    if CountPrimaryJobs(jobs) ~= 1 and #jobs > 0 then
+        if cb then cb(false, "Exactly one job must be marked primary") end
+        return
+    end
     local updateData = {
         label = data.label or club.label,
         description = data.description or club.description,
         coords = data.coords or club.coords,
+        society_percentage = data.society_percentage ~= nil and (tonumber(data.society_percentage) or 0) or club.society_percentage,
+        jobs = jobs,
     }
     MySQL.Async.execute(
-        "UPDATE pickle_clubs SET label = @label, description = @description, coords = @coords WHERE id = @id",
+        "UPDATE pickle_clubs SET label = @label, description = @description, coords = @coords, society_percentage = @society_percentage, jobs = @jobs WHERE id = @id",
         {
             ["@id"] = id,
             ["@label"] = updateData.label,
             ["@description"] = updateData.description or "",
             ["@coords"] = json.encode(NormalizeForDb(updateData.coords)),
+            ["@society_percentage"] = updateData.society_percentage or 0,
+            ["@jobs"] = json.encode(updateData.jobs or {}),
         },
         function(affectedRows)
             if affectedRows and affectedRows > 0 then
                 club.label = updateData.label
                 club.description = updateData.description
                 club.coords = updateData.coords
+                club.society_percentage = updateData.society_percentage
+                club.jobs = updateData.jobs
                 SyncAllClubs(-1)
                 if cb then cb(true) end
             else
@@ -389,11 +436,15 @@ function LoadAllClubs()
             for i = 1, #(clubRows or {}) do
                 local row = clubRows[i]
                 local coords = json.decode(row.coords or "{}") or {}
+                local jobsRaw = row.jobs
+                local jobsDecoded = (type(jobsRaw) == "string" and json.decode(jobsRaw)) or (type(jobsRaw) == "table" and jobsRaw) or {}
                 loaded[row.id] = {
                     id = row.id,
                     label = row.label,
                     description = row.description or "",
                     coords = NormalizeFromDb(coords),
+                    society_percentage = tonumber(row.society_percentage) or 0,
+                    jobs = NormalizeJobs(jobsDecoded),
                     entities = {},
                 }
             end
@@ -528,6 +579,91 @@ RegisterNetEvent("pickle_clubs:deleteClubEntity", function(clubId, entityId)
     end)
 end)
 
+local function GetPrimaryJobName(club)
+    local jobs = club and club.jobs or {}
+    for i = 1, #jobs do
+        if jobs[i].primary and type(jobs[i].name) == "string" and jobs[i].name ~= "" then
+            return jobs[i].name
+        end
+    end
+    return nil
+end
+
+local function PlayerHasClubAccess(source, clubId)
+    local club = Clubs[clubId]
+    if not club or not club.jobs then return false end
+    local jobName = GetPlayerJobName(source)
+    if not jobName then return false end
+    for i = 1, #club.jobs do
+        if club.jobs[i].name == jobName then
+            return true
+        end
+    end
+    return false
+end
+
+lib.callback.register("pickle_clubs:getSocietyBalance", function(source, clubId)
+    if not clubId or not Clubs[clubId] then return nil end
+    if not PlayerHasClubAccess(source, clubId) then return nil end
+    local club = Clubs[clubId]
+    local societyName = GetPrimaryJobName(club)
+    if not societyName then return 0 end
+    local balance = 0
+    local done = false
+    GetSocietyBalance(societyName, function(b)
+        balance = b
+        done = true
+    end)
+    while not done do
+        Wait(0)
+    end
+    return balance
+end)
+
+lib.callback.register("pickle_clubs:societyDeposit", function(source, clubId, amount)
+    if not clubId or not Clubs[clubId] then return false, "Club not found" end
+    if not PlayerHasClubAccess(source, clubId) then return false, "No access" end
+    amount = tonumber(amount)
+    if not amount or amount <= 0 then return false, "Invalid amount" end
+    local club = Clubs[clubId]
+    local societyName = GetPrimaryJobName(club)
+    if not societyName then return false, "No society configured" end
+    local cash = GetMoney(source, "money")
+    if cash < amount then return false, "Not enough cash" end
+    RemoveMoney(source, amount, "money")
+    AddSocietyMoney(societyName, amount)
+    return true
+end)
+
+lib.callback.register("pickle_clubs:societyWithdraw", function(source, clubId, amount)
+    if not clubId or not Clubs[clubId] then return false, "Club not found" end
+    if not PlayerHasClubAccess(source, clubId) then return false, "No access" end
+    amount = tonumber(amount)
+    if not amount or amount <= 0 then return false, "Invalid amount" end
+    local club = Clubs[clubId]
+    local societyName = GetPrimaryJobName(club)
+    if not societyName then return false, "No society configured" end
+    local done = false
+    local balance = 0
+    GetSocietyBalance(societyName, function(b)
+        balance = b
+        done = true
+    end)
+    while not done do
+        Wait(0)
+    end
+    if balance < amount then return false, "Not enough in society" end
+    RemoveSocietyMoney(societyName, amount, function()
+        AddMoney(source, amount, "money")
+        done = true
+    end)
+    done = false
+    while not done do
+        Wait(0)
+    end
+    return true
+end)
+
 lib.callback.register("pickle_clubs:checkIsAdmin", function(source)
     return IsPlayerAdmin(source)
 end)
@@ -567,10 +703,13 @@ MySQL.ready(function()
             label VARCHAR(255) NOT NULL,
             description TEXT NULL,
             coords JSON NOT NULL,
+            society_percentage INT DEFAULT 0,
+            jobs JSON NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         )
     ]], {}, function()
+        -- Existing DBs: run once: ALTER TABLE pickle_clubs ADD COLUMN society_percentage INT DEFAULT 0, ADD COLUMN jobs JSON NULL; (society name = primary job name)
         MySQL.Async.execute([[
             CREATE TABLE IF NOT EXISTS pickle_club_entities (
                 id INT AUTO_INCREMENT PRIMARY KEY,

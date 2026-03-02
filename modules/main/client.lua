@@ -2,6 +2,253 @@ Clubs = {}
 LocalClubs = {}
 RegisteredEntityTypes = {}
 CurrentCamera = nil
+ClubManagementNuiVisible = false
+ClubManagementFocus = true
+
+local function ApplyClubManagementFocus(toggle)
+    ClubManagementFocus = toggle == true
+    if ClubManagementFocus then
+        SetNuiFocus(true, true)
+        SetNuiFocusKeepInput(false)
+    else
+        SetNuiFocus(true, false)
+        SetNuiFocusKeepInput(true)
+    end
+    SendNUIMessage({
+        type = "setClubManagementFocus",
+        toggle = ClubManagementFocus,
+    })
+end
+
+local function NormalizeForNui(value)
+    local valueType = type(value)
+    if valueType == "vector3" then
+        return { x = value.x, y = value.y, z = value.z }
+    end
+    if valueType ~= "table" then
+        return value
+    end
+    local output = {}
+    for k, v in pairs(value) do
+        output[k] = NormalizeForNui(v)
+    end
+    return output
+end
+
+-- Serialize clubs for NUI
+local function SerializeClubsForNui()
+    local list = {}
+    for id, club in pairs(Clubs) do
+        local entitiesMap = {}
+        for entityId, entity in pairs(club.entities or {}) do
+            entitiesMap[tostring(entityId)] = NormalizeForNui(entity)
+        end
+        list[#list + 1] = {
+            id = id,
+            label = club.label or ("Club #" .. id),
+            description = club.description or "",
+            coords = NormalizeForNui(club.coords),
+            society_percentage = club.society_percentage or 0,
+            jobs = club.jobs or {},
+            entities = entitiesMap,
+        }
+    end
+    return list
+end
+
+RegisterNUICallback("closeClubManagement", function(_, cb)
+    ClubManagementNuiVisible = false
+    ClubManagementFocus = false
+    SetNuiFocusKeepInput(false)
+    SetNuiFocus(false, false)
+    cb({ ok = true })
+end)
+
+RegisterNUICallback("toggleClubManagementFocus", function(_, cb)
+    if ClubManagementNuiVisible then
+        ApplyClubManagementFocus(not ClubManagementFocus)
+    end
+    cb({ ok = true, focus = ClubManagementFocus })
+end)
+
+local function RunWithReleasedManagementFocus(cb)
+    local previousFocus = ClubManagementFocus
+    if ClubManagementNuiVisible then
+        SendNUIMessage({ type = "setClubManagementPanelHidden", hidden = true })
+        ApplyClubManagementFocus(false)
+    end
+    local results = { cb() }
+    if ClubManagementNuiVisible then
+        SendNUIMessage({ type = "setClubManagementPanelHidden", hidden = false })
+        ApplyClubManagementFocus(previousFocus)
+    end
+    return table.unpack(results)
+end
+
+local function BuildEntityPayloadFromUiWithGizmo(clubId, entityType, sourcePayload)
+    local club = Clubs[clubId]
+    if not club then return nil end
+
+    local payload = DeepCopy(sourcePayload or {})
+    payload.type = entityType
+
+    if entityType == "bartender" then
+        payload.bartender = payload.bartender or {}
+        payload.bartender.blip = payload.bartender.blip or {
+            name = "Bartending Station",
+            color = 5,
+            sprite = 52,
+            scale = 0.8,
+            visible = true,
+        }
+        if payload.bartender.blip.visible == nil then payload.bartender.blip.visible = true end
+        return RunWithReleasedManagementFocus(function()
+            return UpdateBartenderPosition(payload, club)
+        end)
+    end
+
+    if entityType == "bouncer" then
+        payload.bouncer = payload.bouncer or {}
+        payload.bouncer.ped = payload.bouncer.ped or "bouncer_1"
+        return RunWithReleasedManagementFocus(function()
+            return UpdateBouncerPosition(payload, club)
+        end)
+    end
+
+    if entityType == "club_entry" then
+        payload.bouncer = payload.bouncer or {}
+        payload.bouncer.ped = payload.bouncer.ped or "bouncer_1"
+        payload.eject = payload.eject or {}
+        return RunWithReleasedManagementFocus(function()
+            local movedBouncer = UpdateClubEntryBouncerPosition(payload, club)
+            if not movedBouncer then return nil end
+            return UpdateClubEntryEjectPosition(movedBouncer, club)
+        end)
+    end
+
+    if entityType == "society" then
+        payload.society = payload.society or {}
+        return RunWithReleasedManagementFocus(function()
+            return UpdateSocietyPosition(payload, club)
+        end)
+    end
+
+    return payload
+end
+
+RegisterNUICallback("clubManagementAction", function(payload, cb)
+    local action = payload and payload.action or nil
+    local data = payload and payload.data or {}
+
+    if action == "createClub" then
+        local defaultCoords = GetEntityCoords(PlayerPedId())
+        TriggerServerEvent("pickle_clubs:createClub", {
+            label = data.label,
+            description = data.description or "",
+            coords = data.coords or defaultCoords,
+            society_percentage = data.society_percentage,
+            jobs = data.jobs,
+        })
+    elseif action == "updateClub" then
+        TriggerServerEvent("pickle_clubs:updateClub", tonumber(data.clubId), {
+            label = data.label,
+            description = data.description or "",
+            coords = data.coords,
+            society_percentage = data.society_percentage,
+            jobs = data.jobs,
+        })
+    elseif action == "deleteClub" then
+        TriggerServerEvent("pickle_clubs:deleteClub", tonumber(data.clubId))
+    elseif action == "createClubEntity" then
+        local clubId = tonumber(data.clubId)
+        local entityType = data.entityType
+        local entityPayload = data.entityData
+        if data.useGizmo == true then
+            entityPayload = BuildEntityPayloadFromUiWithGizmo(clubId, entityType, entityPayload)
+        end
+        if entityPayload then
+            TriggerServerEvent("pickle_clubs:createClubEntity", clubId, entityType, entityPayload)
+        end
+    elseif action == "updateClubEntity" then
+        TriggerServerEvent("pickle_clubs:updateClubEntity", tonumber(data.clubId), tostring(data.entityId), data.entityData)
+    elseif action == "deleteClubEntity" then
+        TriggerServerEvent("pickle_clubs:deleteClubEntity", tonumber(data.clubId), tostring(data.entityId))
+    elseif action == "editClubCoords" then
+        local clubId = tonumber(data.clubId)
+        local club = Clubs[clubId]
+        if club then
+            local coords = RunWithReleasedManagementFocus(function()
+                local gizmo = StartGizmoEditor({
+                    model = Config.Bartender.registerModel or `vw_prop_casino_till`,
+                    coords = club.coords,
+                    rotation = vector3(0.0, 0.0, GetEntityHeading(PlayerPedId())),
+                    enableCancel = true,
+                })
+                if not gizmo or not gizmo.position then return nil end
+                return gizmo.position
+            end)
+            if coords then
+                Clubs[clubId].coords = coords
+                TriggerServerEvent("pickle_clubs:updateClub", clubId, { coords = coords })
+                if ClubManagementNuiVisible then
+                    SendNUIMessage({
+                        type = "updateClubManagement",
+                        clubs = SerializeClubsForNui(),
+                    })
+                end
+            end
+        end
+    elseif action == "editEntityTransform" then
+        local clubId = tonumber(data.clubId)
+        local entityId = tostring(data.entityId)
+        local target = data.target or "main"
+        local club = Clubs[clubId]
+        local entity = club and club.entities and club.entities[entityId]
+        if club and entity then
+            local updatedPayload = nil
+            if entity.type == "bartender" then
+                updatedPayload = RunWithReleasedManagementFocus(function()
+                    return WithTemporarilyHiddenEntity(clubId, entityId, function()
+                        return UpdateBartenderPosition(entity, club)
+                    end)
+                end)
+            elseif entity.type == "bouncer" then
+                updatedPayload = RunWithReleasedManagementFocus(function()
+                    return WithTemporarilyHiddenEntity(clubId, entityId, function()
+                        return UpdateBouncerPosition(entity, club)
+                    end)
+                end)
+            elseif entity.type == "club_entry" then
+                updatedPayload = RunWithReleasedManagementFocus(function()
+                    return WithTemporarilyHiddenEntity(clubId, entityId, function()
+                        if target == "eject" then
+                            return UpdateClubEntryEjectPosition(entity, club)
+                        end
+                        return UpdateClubEntryBouncerPosition(entity, club)
+                    end)
+                end)
+            elseif entity.type == "society" then
+                updatedPayload = RunWithReleasedManagementFocus(function()
+                    return WithTemporarilyHiddenEntity(clubId, entityId, function()
+                        return UpdateSocietyPosition(entity, club)
+                    end)
+                end)
+            end
+            if updatedPayload then
+                Clubs[clubId].entities[entityId] = updatedPayload
+                TriggerServerEvent("pickle_clubs:updateClubEntity", clubId, entityId, updatedPayload)
+                if ClubManagementNuiVisible then
+                    SendNUIMessage({
+                        type = "updateClubManagement",
+                        clubs = SerializeClubsForNui(),
+                    })
+                end
+            end
+        end
+    end
+
+    cb({ ok = true })
+end)
 
 function CreateScriptedCamera()
     if CurrentCamera then ExitScriptedCamera() end
@@ -81,21 +328,21 @@ function UnrenderClubEntity(id, entityId)
 end
 
 function RegisterEntityType(entityType, data)
+    local localOnRender = data.onRender or function() end
+    local localOnUnrender = data.onUnrender or function() end
     RegisteredEntityTypes[entityType] = {
         label = data.label or entityType,
         description = data.description or "This is the " .. entityType .. " entity type.",
         data =  data.data or {},
+        localOnRender = localOnRender,
+        localOnUnrender = localOnUnrender,
         onRender = function(id, entityId)
             TriggerServerEvent("pickle_clubs:renderEntity", id, entityId)
-            if data.onRender then
-                data.onRender(id, entityId)
-            end
+            localOnRender(id, entityId)
         end,
         onUnrender = function(id, entityId)
             TriggerServerEvent("pickle_clubs:unrenderEntity", id, entityId)
-            if data.onUnrender then
-                data.onUnrender(id, entityId)
-            end
+            localOnUnrender(id, entityId)
         end,
     }
 end
@@ -228,22 +475,40 @@ local function GetEntityAnchor(entity, fallback)
     if entity.type == "bartender" and entity.bartender then
         return ToVector3(entity.bartender.coords, fallback)
     end
+    if entity.type == "society" and entity.society then
+        return ToVector3(entity.society.coords, fallback)
+    end
     if entity.bouncer then
         return ToVector3(entity.bouncer.coords, fallback)
     end
-    if entity.line then
-        return ToVector3(entity.line.coords, fallback)
+    if entity.eject then
+        return ToVector3(entity.eject.coords, fallback)
     end
     return fallback
 end
 
-local function PlaceWithGizmo(initialCoords, initialHeading)
-    local gizmo = StartGizmoEditor({
-        model = Config.Bartender.registerModel or `vw_prop_casino_till`,
+local function ResolvePedModelForGizmo(pedId)
+    local pedCfg = Config.Peds and Config.Peds[pedId]
+    if pedCfg and pedCfg.model then
+        return pedCfg.model
+    end
+    return `s_m_m_bouncer_01`
+end
+
+local function PlaceWithGizmo(initialCoords, initialHeading, data, isPed)
+    local modelOverride = type(data) == "table" and data.model or data
+    local gizmoData = {
+        model = modelOverride or Config.Bartender.registerModel or `vw_prop_casino_till`,
         coords = initialCoords,
         rotation = vector3(0.0, 0.0, initialHeading or 0.0),
         enableCancel = true,
-    })
+        isPed = isPed == true,
+    }
+    if type(data) == "table" then
+        if data.coordsOffset then gizmoData.coordsOffset = data.coordsOffset end
+        if data.rotationOffset then gizmoData.rotationOffset = data.rotationOffset end
+    end
+    local gizmo = StartGizmoEditor(gizmoData)
     if not gizmo or not gizmo.position then return nil, nil end
     return gizmo.position, (gizmo.rotation and gizmo.rotation.z) or (initialHeading or 0.0)
 end
@@ -261,16 +526,8 @@ local function BuildBartenderEntityFromInput(baseEntity, defaultCoords, defaultH
         { type = "input", label = "Blip Sprite", default = tostring((current.blip and current.blip.sprite) or 52), required = true },
         { type = "input", label = "Blip Scale", default = tostring((current.blip and current.blip.scale) or 0.8), required = true },
         { type = "checkbox", label = "Blip Visible", checked = (current.blip and current.blip.visible) ~= false },
-        { type = "input", label = "Society Name (optional)", default = current.society_name or "", required = false },
-        { type = "input", label = "Society Percentage (0-100)", default = tostring(current.society_percentage or 0), required = true },
     })
     if not input then return nil end
-
-    local societyName = input[6] and string.gsub(input[6], "^%s*(.-)%s*$", "%1") or ""
-    if societyName == "" then societyName = nil end
-    local societyPercentage = tonumber(input[7]) or 0
-    if societyPercentage < 0 then societyPercentage = 0 end
-    if societyPercentage > 100 then societyPercentage = 100 end
 
     return {
         type = "bartender",
@@ -284,8 +541,6 @@ local function BuildBartenderEntityFromInput(baseEntity, defaultCoords, defaultH
                 scale = tonumber(input[4]) or 0.8,
                 visible = input[5] ~= false,
             },
-            society_name = societyName,
-            society_percentage = societyPercentage,
         },
     }
 end
@@ -294,18 +549,37 @@ local function BuildBouncerEntityFromInput(baseEntity, defaultCoords, defaultHea
     local current = (baseEntity and baseEntity.bouncer) or {}
     local startCoords = ToVector3(current.coords, defaultCoords)
     local startHeading = current.heading or defaultHeading or 0.0
-    local coords, heading = PlaceWithGizmo(startCoords, startHeading)
-    if not coords then return nil end
 
     local input = lib.inputDialog("Bouncer Settings", {
         { type = "input", label = "Ped Config Id", description = "Config.Peds key (example: bouncer_1)", default = current.ped or "bouncer_1", required = true },
     })
     if not input then return nil end
+    local pedId = input[1]
+
+    local coords, heading = PlaceWithGizmo(startCoords, startHeading, ResolvePedModelForGizmo(pedId), true)
+    if not coords then return nil end
 
     return {
         type = "bouncer",
         bouncer = {
-            ped = input[1],
+            ped = pedId,
+            coords = coords,
+            heading = heading,
+        },
+    }
+end
+
+local function BuildSocietyEntityFromInput(baseEntity, defaultCoords, defaultHeading)
+    local current = (baseEntity and baseEntity.society) or {}
+    local startCoords = ToVector3(current.coords, defaultCoords)
+    local startHeading = current.heading or defaultHeading or 0.0
+    local model = Config.Society and Config.Society.model or `prop_atm_01`
+    local coords, heading = PlaceWithGizmo(startCoords, startHeading, model, false)
+    if not coords then return nil end
+
+    return {
+        type = "society",
+        society = {
             coords = coords,
             heading = heading,
         },
@@ -314,40 +588,49 @@ end
 
 local function BuildClubEntryEntityFromInput(baseEntity, defaultCoords, defaultHeading)
     local currentBouncer = (baseEntity and baseEntity.bouncer) or {}
-    local currentLine = (baseEntity and baseEntity.line) or {}
-
-    local initialBouncerCoords = ToVector3(currentBouncer.coords, defaultCoords)
-    local initialBouncerHeading = currentBouncer.heading or defaultHeading or 0.0
-    local bouncerCoords, bouncerHeading = PlaceWithGizmo(initialBouncerCoords, initialBouncerHeading)
-    if not bouncerCoords then return nil end
-
-    local initialLineCoords = ToVector3(currentLine.coords, bouncerCoords + vector3(0.0, -2.0, 0.0))
-    local initialLineHeading = currentLine.heading or bouncerHeading
-    local lineCoords, lineHeading = PlaceWithGizmo(initialLineCoords, initialLineHeading)
-    if not lineCoords then return nil end
+    local currentEject = (baseEntity and baseEntity.eject) or {}
 
     local input = lib.inputDialog("Club Entry Settings", {
         { type = "input", label = "Bouncer Ped Config Id", description = "Config.Peds key (example: bouncer_1)", default = currentBouncer.ped or "bouncer_1", required = true },
-        { type = "select", label = "Line Direction", default = currentLine.direction or "forward", required = true, options = {
-            { value = "forward", label = "Forward" },
-            { value = "backward", label = "Backward" },
-        } },
     })
     if not input then return nil end
+    local pedId = input[1]
+
+    local initialBouncerCoords = ToVector3(currentBouncer.coords, defaultCoords)
+    local initialBouncerHeading = currentBouncer.heading or defaultHeading or 0.0
+    local bouncerCoords, bouncerHeading = PlaceWithGizmo(initialBouncerCoords, initialBouncerHeading, ResolvePedModelForGizmo(pedId), true)
+    if not bouncerCoords then return nil end
+
+    local initialEjectCoords = ToVector3(currentEject.coords, bouncerCoords + vector3(0.0, -2.0, 0.0))
+    local initialEjectHeading = currentEject.heading or bouncerHeading
+    local ejectCoords, ejectHeading = PlaceWithGizmo(initialEjectCoords, initialEjectHeading, {
+        model = `prop_ar_arrow_3`,
+        coordsOffset = vector3(0.0, 0.0, 0.1),
+        rotationOffset = vector3(90.0, 0.0, 90.0),
+    }, false)
+    if not ejectCoords then return nil end
 
     return {
         type = "club_entry",
         bouncer = {
-            ped = input[1],
+            ped = pedId,
             coords = bouncerCoords,
             heading = bouncerHeading,
         },
-        line = {
-            direction = input[2] or "forward",
-            coords = lineCoords,
-            heading = lineHeading,
+        eject = {
+            coords = ejectCoords,
+            heading = ejectHeading,
         },
     }
+end
+
+function DeepCopy(value)
+    if type(value) ~= "table" then return value end
+    local output = {}
+    for k, v in pairs(value) do
+        output[k] = DeepCopy(v)
+    end
+    return output
 end
 
 local function BuildEntityPayload(entityType, baseEntity, club)
@@ -356,7 +639,9 @@ local function BuildEntityPayload(entityType, baseEntity, club)
     local defaultHeading = 0.0
     if baseEntity and baseEntity.bartender then defaultHeading = baseEntity.bartender.heading or defaultHeading end
     if baseEntity and baseEntity.bouncer then defaultHeading = baseEntity.bouncer.heading or defaultHeading end
-    if baseEntity and baseEntity.line then defaultHeading = baseEntity.line.heading or defaultHeading end
+    if baseEntity and baseEntity.eject then defaultHeading = baseEntity.eject.heading or defaultHeading end
+
+    if baseEntity and baseEntity.society then defaultHeading = baseEntity.society.heading or defaultHeading end
 
     if entityType == "bartender" then
         return BuildBartenderEntityFromInput(baseEntity, anchor, defaultHeading)
@@ -364,34 +649,275 @@ local function BuildEntityPayload(entityType, baseEntity, club)
         return BuildBouncerEntityFromInput(baseEntity, anchor, defaultHeading)
     elseif entityType == "club_entry" then
         return BuildClubEntryEntityFromInput(baseEntity, anchor, defaultHeading)
+    elseif entityType == "society" then
+        return BuildSocietyEntityFromInput(baseEntity, anchor, defaultHeading)
     end
     return nil
+end
+
+function UpdateBartenderPosition(entity, club)
+    local current = entity.bartender or {}
+    local startCoords = ToVector3(current.coords, club.coords)
+    local startHeading = current.heading or 0.0
+    local coords, heading = PlaceWithGizmo(startCoords, startHeading)
+    if not coords then return nil end
+    
+    local updated = DeepCopy(entity)
+    updated.bartender = updated.bartender or {}
+    updated.bartender.coords = coords
+    updated.bartender.heading = heading
+    return updated
+end
+
+local function UpdateBartenderSettings(entity)
+    local current = entity.bartender or {}
+    local input = lib.inputDialog("Bartender Settings", {
+        { type = "input", label = "Blip Name", default = (current.blip and current.blip.name) or "Bartending Station", required = true },
+        { type = "input", label = "Blip Color", default = tostring((current.blip and current.blip.color) or 5), required = true },
+        { type = "input", label = "Blip Sprite", default = tostring((current.blip and current.blip.sprite) or 52), required = true },
+        { type = "input", label = "Blip Scale", default = tostring((current.blip and current.blip.scale) or 0.8), required = true },
+        { type = "checkbox", label = "Blip Visible", checked = (current.blip and current.blip.visible) ~= false },
+    })
+    if not input then return nil end
+
+    local updated = DeepCopy(entity)
+    updated.bartender = updated.bartender or {}
+    updated.bartender.blip = {
+        name = input[1],
+        color = tonumber(input[2]) or 5,
+        sprite = tonumber(input[3]) or 52,
+        scale = tonumber(input[4]) or 0.8,
+        visible = input[5] ~= false,
+    }
+    return updated
+end
+
+function UpdateBouncerPosition(entity, club)
+    local current = entity.bouncer or {}
+    local startCoords = ToVector3(current.coords, club.coords)
+    local startHeading = current.heading or 0.0
+    local pedId = current.ped or "bouncer_1"
+    local coords, heading = PlaceWithGizmo(startCoords, startHeading, ResolvePedModelForGizmo(pedId), true)
+    if not coords then return nil end
+    
+    local updated = DeepCopy(entity)
+    updated.bouncer = updated.bouncer or {}
+    updated.bouncer.coords = coords
+    updated.bouncer.heading = heading
+    return updated
+end
+
+local function UpdateBouncerSettings(entity)
+    local current = entity.bouncer or {}
+    local input = lib.inputDialog("Bouncer Settings", {
+        { type = "input", label = "Ped Config Id", description = "Config.Peds key (example: bouncer_1)", default = current.ped or "bouncer_1", required = true },
+    })
+    if not input then return nil end
+    
+    local updated = DeepCopy(entity)
+    updated.bouncer = updated.bouncer or {}
+    updated.bouncer.ped = input[1]
+    return updated
+end
+
+function UpdateClubEntryBouncerPosition(entity, club)
+    local currentBouncer = entity.bouncer or {}
+    local startCoords = ToVector3(currentBouncer.coords, club.coords)
+    local startHeading = currentBouncer.heading or 0.0
+    local pedId = currentBouncer.ped or "bouncer_1"
+    local coords, heading = PlaceWithGizmo(startCoords, startHeading, ResolvePedModelForGizmo(pedId), true)
+    if not coords then return nil end
+    
+    local updated = DeepCopy(entity)
+    updated.bouncer = updated.bouncer or {}
+    updated.bouncer.coords = coords
+    updated.bouncer.heading = heading
+    return updated
+end
+
+function UpdateSocietyPosition(entity, club)
+    local current = entity.society or {}
+    local startCoords = ToVector3(current.coords, club.coords)
+    local startHeading = current.heading or 0.0
+    local model = Config.Society and Config.Society.model or `prop_atm_01`
+    local coords, heading = PlaceWithGizmo(startCoords, startHeading, model, false)
+    if not coords then return nil end
+
+    local updated = DeepCopy(entity)
+    updated.society = updated.society or {}
+    updated.society.coords = coords
+    updated.society.heading = heading
+    return updated
+end
+
+function UpdateClubEntryEjectPosition(entity, club)
+    local currentEject = entity.eject or {}
+    local currentBouncer = entity.bouncer or {}
+    local startCoords = ToVector3(currentEject.coords, currentBouncer.coords and (currentBouncer.coords + vector3(0.0, -2.0, 0.0)) or club.coords)
+    local startHeading = currentEject.heading or (currentBouncer.heading or 0.0)
+    local coords, heading = PlaceWithGizmo(startCoords, startHeading, {
+        model = `prop_ar_arrow_3`,
+        coordsOffset = vector3(0.0, 0.0, 0.1),
+        rotationOffset = vector3(90.0, 0.0, 90.0),
+    }, false)
+    if not coords then return nil end
+    
+    local updated = DeepCopy(entity)
+    updated.eject = updated.eject or {}
+    updated.eject.coords = coords
+    updated.eject.heading = heading
+    return updated
+end
+
+local function UpdateClubEntrySettings(entity)
+    local currentBouncer = entity.bouncer or {}
+    local input = lib.inputDialog("Club Entry Settings", {
+        { type = "input", label = "Bouncer Ped Config Id", description = "Config.Peds key (example: bouncer_1)", default = currentBouncer.ped or "bouncer_1", required = true },
+    })
+    if not input then return nil end
+    
+    local updated = DeepCopy(entity)
+    updated.bouncer = updated.bouncer or {}
+    updated.bouncer.ped = input[1]
+    return updated
 end
 
 local function EntityTitle(entityType)
     if entityType == "bartender" then return "Bartender" end
     if entityType == "bouncer" then return "Bouncer" end
     if entityType == "club_entry" then return "Club Entry" end
+    if entityType == "society" then return "Society" end
     return entityType
 end
 
-local function OpenClubEntityMenu(clubId, entityId)
+function WithTemporarilyHiddenEntity(clubId, entityId, cb)
+    local club = Clubs[clubId]
+    if not club or not club.entities or not club.entities[entityId] then
+        return cb()
+    end
+    local entity = club.entities[entityId]
+    local reg = RegisteredEntityTypes[entity.type]
+    if not reg then
+        return cb()
+    end
+    local isRendered = LocalClubs[clubId] and LocalClubs[clubId].entities and LocalClubs[clubId].entities[entityId]
+    if isRendered and reg.localOnUnrender then
+        reg.localOnUnrender(clubId, entityId)
+        LocalClubs[clubId].entities[entityId] = nil
+    end
+
+    local results = {cb()}
+
+    if isRendered and reg.localOnRender then
+        reg.localOnRender(clubId, entityId)
+        LocalClubs[clubId].entities[entityId] = true
+    end
+    return table.unpack(results)
+end
+
+function OpenClubEntityMenu(clubId, entityId)
     local club = Clubs[clubId]
     if not club then return end
     local entity = club.entities[entityId]
     if not entity then return end
 
     local options = {}
-    table.insert(options, {
-        title = ("Edit %s"):format(EntityTitle(entity.type)),
-        description = "Update this entity configuration",
-        onSelect = function()
-            local payload = BuildEntityPayload(entity.type, entity, club)
-            if payload then
-                TriggerServerEvent("pickle_clubs:updateClubEntity", clubId, entityId, payload)
-            end
-        end,
-    })
+    
+    if entity.type == "bartender" then
+        table.insert(options, {
+            title = "Move Position",
+            description = "Reposition the bartender station",
+            onSelect = function()
+                local payload = WithTemporarilyHiddenEntity(clubId, entityId, function()
+                    return UpdateBartenderPosition(entity, club)
+                end)
+                if payload then
+                    TriggerServerEvent("pickle_clubs:updateClubEntity", clubId, entityId, payload)
+                end
+            end,
+        })
+        table.insert(options, {
+            title = "Edit Settings",
+            description = "Configure blip settings",
+            onSelect = function()
+                local payload = UpdateBartenderSettings(entity)
+                if payload then
+                    TriggerServerEvent("pickle_clubs:updateClubEntity", clubId, entityId, payload)
+                end
+            end,
+        })
+    elseif entity.type == "bouncer" then
+        table.insert(options, {
+            title = "Move Position",
+            description = "Reposition the bouncer",
+            onSelect = function()
+                local payload = WithTemporarilyHiddenEntity(clubId, entityId, function()
+                    return UpdateBouncerPosition(entity, club)
+                end)
+                if payload then
+                    TriggerServerEvent("pickle_clubs:updateClubEntity", clubId, entityId, payload)
+                end
+            end,
+        })
+        table.insert(options, {
+            title = "Edit Settings",
+            description = "Change bouncer ped model",
+            onSelect = function()
+                local payload = UpdateBouncerSettings(entity)
+                if payload then
+                    TriggerServerEvent("pickle_clubs:updateClubEntity", clubId, entityId, payload)
+                end
+            end,
+        })
+    elseif entity.type == "society" then
+        table.insert(options, {
+            title = "Move Position",
+            description = "Reposition the society interaction point",
+            onSelect = function()
+                local payload = WithTemporarilyHiddenEntity(clubId, entityId, function()
+                    return UpdateSocietyPosition(entity, club)
+                end)
+                if payload then
+                    TriggerServerEvent("pickle_clubs:updateClubEntity", clubId, entityId, payload)
+                end
+            end,
+        })
+    elseif entity.type == "club_entry" then
+        table.insert(options, {
+            title = "Move Bouncer Position",
+            description = "Reposition the bouncer",
+            onSelect = function()
+                local payload = WithTemporarilyHiddenEntity(clubId, entityId, function()
+                    return UpdateClubEntryBouncerPosition(entity, club)
+                end)
+                if payload then
+                    TriggerServerEvent("pickle_clubs:updateClubEntity", clubId, entityId, payload)
+                end
+            end,
+        })
+        table.insert(options, {
+            title = "Move Eject Position",
+            description = "Reposition where players are thrown out",
+            onSelect = function()
+                local payload = WithTemporarilyHiddenEntity(clubId, entityId, function()
+                    return UpdateClubEntryEjectPosition(entity, club)
+                end)
+                if payload then
+                    TriggerServerEvent("pickle_clubs:updateClubEntity", clubId, entityId, payload)
+                end
+            end,
+        })
+        table.insert(options, {
+            title = "Edit Settings",
+            description = "Change bouncer ped model",
+            onSelect = function()
+                local payload = UpdateClubEntrySettings(entity)
+                if payload then
+                    TriggerServerEvent("pickle_clubs:updateClubEntity", clubId, entityId, payload)
+                end
+            end,
+        })
+    end
 
     table.insert(options, {
         title = "Delete Entity",
@@ -496,6 +1022,16 @@ local function OpenClubManageMenu(clubId)
                             end
                         end,
                     },
+                    {
+                        title = "Add Society",
+                        description = "Create a society deposit/withdraw interaction point",
+                        onSelect = function()
+                            local payload = BuildEntityPayload("society", nil, club)
+                            if payload then
+                                TriggerServerEvent("pickle_clubs:createClubEntity", clubId, "society", payload)
+                            end
+                        end,
+                    },
                 }
                 lib.registerContext({
                     id = ("club_add_entity_%s"):format(clubId),
@@ -512,6 +1048,7 @@ local function OpenClubManageMenu(clubId)
         bartender = {},
         bouncer = {},
         club_entry = {},
+        society = {},
         other = {},
     }
     for listedEntityId, listedEntity in pairs(club.entities or {}) do
@@ -521,7 +1058,7 @@ local function OpenClubManageMenu(clubId)
             data = listedEntity,
         })
     end
-    local orderedTypes = {"bartender", "bouncer", "club_entry", "other"}
+    local orderedTypes = {"bartender", "bouncer", "club_entry", "society", "other"}
     for i = 1, #orderedTypes do
         local entityType = orderedTypes[i]
         if #grouped[entityType] > 0 then
@@ -537,7 +1074,7 @@ local function OpenClubManageMenu(clubId)
                     title = tostring(item.id),
                     description = ("Type: %s | Coords: %s"):format(EntityTitle(item.data.type), CoordsDescription(GetEntityAnchor(item.data, club.coords))),
                     onSelect = function()
-                        OpenClubEntityMenu(clubId, item.id)
+                        OpenClubManagementNuiForEntity(clubId, item.id)
                     end,
                 })
             end
@@ -591,6 +1128,41 @@ local function OpenClubManageMenu(clubId)
     lib.showContext(("club_manage_%s"):format(clubId))
 end
 
+-- Opens the Club Management NUI (used by /managebar and pickle_clubs:openClubManagement).
+function OpenClubManagementNui()
+    lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
+        if not isAdmin then
+            ShowNotification("You do not have permission to manage clubs.")
+            return
+        end
+        ClubManagementNuiVisible = true
+        ApplyClubManagementFocus(true)
+        SendNUIMessage({
+            type = "openClubManagement",
+            clubs = SerializeClubsForNui(),
+        })
+    end)
+end
+
+-- Opens the Club Management NUI directly to a specific entity (used when "Manage" is clicked on bartender/bouncer/club_entry).
+function OpenClubManagementNuiForEntity(clubId, entityId)
+    lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
+        if not isAdmin then
+            ShowNotification("You do not have permission to manage clubs.")
+            return
+        end
+        ClubManagementNuiVisible = true
+        ApplyClubManagementFocus(true)
+        SendNUIMessage({
+            type = "openClubManagement",
+            clubs = SerializeClubsForNui(),
+            clubId = clubId,
+            entityId = entityId,
+        })
+    end)
+end
+
+-- Opens the ox_lib Club Management menu (Create New Club, Manage Existing Clubs).
 function OpenClubManagement()
     lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
         if not isAdmin then
@@ -702,12 +1274,19 @@ RegisterNetEvent("pickle_clubs:syncClubs", function(id, data)
             RegisterClub(k, v)
         end
     end
+
+    if ClubManagementNuiVisible then
+        SendNUIMessage({
+            type = "updateClubManagement",
+            clubs = SerializeClubsForNui(),
+        })
+    end
 end)
 
 RegisterNetEvent("pickle_clubs:openClubManagement", function()
-    OpenClubManagement()
+    OpenClubManagementNui()
 end)
 
 AddEventHandler("pickle_clubs:openClubManagement", function()
-    OpenClubManagement()
+    OpenClubManagementNui()
 end)

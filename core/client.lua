@@ -100,7 +100,7 @@ function ShowInteractText(text)
     interactTick = timer
     if interactText == nil or interactText ~= text then 
         interactText = text
-        lib.showTextUI(text)
+        SendNUIMessage({ type = "setInteractText", text = text })
     end
     if interactCheck then return end
     interactCheck = true
@@ -109,7 +109,7 @@ function ShowInteractText(text)
         local timer = GetGameTimer()
         interactCheck = false
         if timer ~= interactTick then 
-            lib.hideTextUI()
+            SendNUIMessage({ type = "setInteractText", text = nil })
             interactText = nil
             interactTick = 0
         end
