@@ -56,6 +56,9 @@ type SocietyEntity = {
 
 type ClubEntity = BartenderEntity | BouncerEntity | ClubEntryEntity | SocietyEntity | Record<string, unknown>;
 
+type DrinkMenuItem = { name: string; price: number };
+type DrinkMenu = Record<string, DrinkMenuItem>;
+
 interface ClubSummary {
   id: number;
   label: string;
@@ -64,6 +67,7 @@ interface ClubSummary {
   society_percentage?: number;
   jobs?: ClubJob[];
   entities?: Record<string, ClubEntity>;
+  drink_menu?: DrinkMenu;
 }
 
 interface ClubManagementData {
@@ -76,6 +80,7 @@ interface ClubEditorState {
   coords: Vec3;
   society_percentage: number;
   jobs: ClubJob[];
+  drink_menu: DrinkMenu;
 }
 
 interface EntityEditorState {
@@ -137,17 +142,21 @@ function normalizeClubs(raw: ClubSummary[]): ClubSummary[] {
     society_percentage: typeof club.society_percentage === "number" ? club.society_percentage : 0,
     jobs: Array.isArray(club.jobs) ? club.jobs : [],
     entities: club.entities || {},
+    drink_menu: club.drink_menu && typeof club.drink_menu === "object" ? club.drink_menu : {},
   }));
 }
 
 function createClubDraft(club?: ClubSummary): ClubEditorState {
   const jobs = Array.isArray(club?.jobs) ? club.jobs : [];
+  const drink_menu =
+    club?.drink_menu && typeof club.drink_menu === "object" ? club.drink_menu : {};
   return {
     label: club?.label || "",
     description: club?.description || "",
     coords: toVec3(club?.coords, DEFAULT_VEC3),
     society_percentage: typeof club?.society_percentage === "number" ? club.society_percentage : 0,
     jobs: jobs.length ? jobs : [],
+    drink_menu,
   };
 }
 
@@ -481,6 +490,7 @@ export function ClubManagement() {
       description: clubDraft.description,
       society_percentage: Math.max(0, Math.min(100, clubDraft.society_percentage)),
       jobs: clubDraft.jobs,
+      drink_menu: clubDraft.drink_menu,
     };
     await withBusyAction(async () => {
       if (creatingClub) {
@@ -851,6 +861,57 @@ export function ClubManagement() {
                       Add
                     </Button>
                   </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-muted-foreground">Drink menu (names and prices for ordering at the bar)</div>
+                  {Object.entries(clubDraft.drink_menu || {})
+                    .sort(([a], [b]) => {
+                      const aParts = a.split("_").map(Number);
+                      const bParts = b.split("_").map(Number);
+                      if (aParts.length !== bParts.length) return aParts.length - bParts.length;
+                      return a < b ? -1 : a > b ? 1 : 0;
+                    })
+                    .map(([key, item]) => (
+                      <div key={key} className="flex items-center gap-2 rounded border border-border bg-background px-2 py-1 text-sm">
+                        <span className="w-12 text-muted-foreground font-mono text-xs">{key}</span>
+                        <input
+                          type="text"
+                          value={item?.name ?? ""}
+                          onChange={(e) =>
+                            setClubDraft((prev) => ({
+                              ...prev,
+                              drink_menu: {
+                                ...prev.drink_menu,
+                                [key]: { ...(prev.drink_menu?.[key] ?? { name: "", price: 0 }), name: e.target.value },
+                              },
+                            }))
+                          }
+                          className="flex-1 h-8 rounded border border-border bg-background px-2 text-xs"
+                          placeholder="Drink name"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={typeof item?.price === "number" ? item.price : 0}
+                          onChange={(e) =>
+                            setClubDraft((prev) => ({
+                              ...prev,
+                              drink_menu: {
+                                ...prev.drink_menu,
+                                [key]: { ...(prev.drink_menu?.[key] ?? { name: "", price: 0 }), price: Math.max(0, parseInt(e.target.value, 10) || 0) },
+                              },
+                            }))
+                          }
+                          className="w-20 h-8 rounded border border-border bg-background px-2 text-xs"
+                          placeholder="Price"
+                        />
+                        <span className="text-xs text-muted-foreground">$</span>
+                      </div>
+                    ))}
+                  {Object.keys(clubDraft.drink_menu || {}).length === 0 && (
+                    <div className="text-xs text-muted-foreground">No drink menu entries (server sends defaults). Save club to persist overrides.</div>
+                  )}
                 </div>
                 {!creatingClub && (
                   <>

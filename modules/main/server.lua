@@ -54,6 +54,48 @@ local function NormalizeJobs(jobs)
     return out
 end
 
+-- Build default drink menu from Config.Bartender.flavors (single + pairs), excluding alcohol base index
+local function BuildDefaultDrinkMenu()
+    local flavors = Config.Bartender and Config.Bartender.flavors or {}
+    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
+    local defaultPrice = (Config.Bartender and type(Config.Bartender.playerOrderPayment) == "number") and Config.Bartender.playerOrderPayment or 0
+    local menu = {}
+    for i = 1, #flavors do
+        if i ~= alcoholIdx then
+            menu[tostring(i)] = { name = flavors[i].label or ("Flavor " .. i), price = defaultPrice }
+        end
+    end
+    for i = 1, #flavors do
+        for j = i + 1, #flavors do
+            if i ~= alcoholIdx and j ~= alcoholIdx then
+                local key = ("%d_%d"):format(i, j)
+                menu[key] = { name = (flavors[i].label or "") .. "-" .. (flavors[j].label or ""), price = defaultPrice }
+            end
+        end
+    end
+    return menu
+end
+
+-- Merge club drink_menu with defaults so every key has name/price
+local function MergeDrinkMenuWithDefaults(clubMenu)
+    local default = BuildDefaultDrinkMenu()
+    local merged = {}
+    for key, entry in pairs(default) do
+        local custom = type(clubMenu) == "table" and clubMenu[key]
+        merged[key] = {
+            name = (custom and type(custom.name) == "string" and custom.name ~= "") and custom.name or entry.name,
+            price = (custom and type(custom.price) == "number") and custom.price or entry.price,
+        }
+    end
+    return merged
+end
+
+function GetClubDrinkMenu(clubId)
+    local club = Clubs[clubId]
+    if not club then return BuildDefaultDrinkMenu() end
+    return MergeDrinkMenuWithDefaults(club.drink_menu or {})
+end
+
 local function BuildClubPacket(data)
     return {
         label = data.label,
@@ -62,6 +104,7 @@ local function BuildClubPacket(data)
         society_percentage = data.society_percentage and tonumber(data.society_percentage) or 0,
         jobs = NormalizeJobs(data.jobs or {}),
         entities = data.entities or {},
+        drink_menu = data.drink_menu and type(data.drink_menu) == "table" and data.drink_menu or {},
     }
 end
 
@@ -150,7 +193,19 @@ local function ValidateEntityData(entityType, entityData)
 end
 
 local function SyncAllClubs(target)
-    TriggerClientEvent("pickle_clubs:syncClubs", target or -1, Clubs)
+    local payload = {}
+    for id, club in pairs(Clubs) do
+        payload[id] = {
+            label = club.label,
+            description = club.description,
+            coords = club.coords,
+            society_percentage = club.society_percentage,
+            jobs = club.jobs,
+            entities = club.entities,
+            drink_menu = GetClubDrinkMenu(id),
+        }
+    end
+    TriggerClientEvent("pickle_clubs:syncClubs", target or -1, payload)
 end
 
 function RegisterClub(data, skipSync)
@@ -229,14 +284,17 @@ function CreateClub(data, cb)
     local payloadCoords = NormalizeForDb(data.coords)
     local jobs = NormalizeJobs(data.jobs or {})
     local jobsJson = json.encode(jobs)
+    local drinkMenu = type(data.drink_menu) == "table" and data.drink_menu or {}
+    local drinkMenuJson = json.encode(drinkMenu)
     MySQL.Async.insert(
-        "INSERT INTO pickle_clubs (label, description, coords, society_percentage, jobs) VALUES (@label, @description, @coords, @society_percentage, @jobs)",
+        "INSERT INTO pickle_clubs (label, description, coords, society_percentage, jobs, drink_menu) VALUES (@label, @description, @coords, @society_percentage, @jobs, @drink_menu)",
         {
             ["@label"] = data.label,
             ["@description"] = data.description or "",
             ["@coords"] = json.encode(payloadCoords),
             ["@society_percentage"] = tonumber(data.society_percentage) or 0,
             ["@jobs"] = jobsJson,
+            ["@drink_menu"] = drinkMenuJson,
         },
         function(insertId)
             if not insertId then
@@ -251,6 +309,7 @@ function CreateClub(data, cb)
                 society_percentage = tonumber(data.society_percentage) or 0,
                 jobs = jobs,
                 entities = {},
+                drink_menu = drinkMenu,
             }, false)
             if cb then cb(true, insertId) end
         end
@@ -276,15 +335,18 @@ function UpdateClub(id, data, cb)
         if cb then cb(false, "Exactly one job must be marked primary") end
         return
     end
+    local drinkMenu = (data.drink_menu ~= nil and type(data.drink_menu) == "table") and data.drink_menu or club.drink_menu
+    if drinkMenu == nil then drinkMenu = {} end
     local updateData = {
         label = data.label or club.label,
         description = data.description or club.description,
         coords = data.coords or club.coords,
         society_percentage = data.society_percentage ~= nil and (tonumber(data.society_percentage) or 0) or club.society_percentage,
         jobs = jobs,
+        drink_menu = drinkMenu,
     }
     MySQL.Async.execute(
-        "UPDATE pickle_clubs SET label = @label, description = @description, coords = @coords, society_percentage = @society_percentage, jobs = @jobs WHERE id = @id",
+        "UPDATE pickle_clubs SET label = @label, description = @description, coords = @coords, society_percentage = @society_percentage, jobs = @jobs, drink_menu = @drink_menu WHERE id = @id",
         {
             ["@id"] = id,
             ["@label"] = updateData.label,
@@ -292,6 +354,7 @@ function UpdateClub(id, data, cb)
             ["@coords"] = json.encode(NormalizeForDb(updateData.coords)),
             ["@society_percentage"] = updateData.society_percentage or 0,
             ["@jobs"] = json.encode(updateData.jobs or {}),
+            ["@drink_menu"] = json.encode(updateData.drink_menu or {}),
         },
         function(affectedRows)
             if affectedRows and affectedRows > 0 then
@@ -300,6 +363,7 @@ function UpdateClub(id, data, cb)
                 club.coords = updateData.coords
                 club.society_percentage = updateData.society_percentage
                 club.jobs = updateData.jobs
+                club.drink_menu = updateData.drink_menu
                 SyncAllClubs(-1)
                 if cb then cb(true) end
             else
@@ -438,6 +502,8 @@ function LoadAllClubs()
                 local coords = json.decode(row.coords or "{}") or {}
                 local jobsRaw = row.jobs
                 local jobsDecoded = (type(jobsRaw) == "string" and json.decode(jobsRaw)) or (type(jobsRaw) == "table" and jobsRaw) or {}
+                local drinkMenuRaw = row.drink_menu
+                local drinkMenu = (type(drinkMenuRaw) == "string" and json.decode(drinkMenuRaw)) or (type(drinkMenuRaw) == "table" and drinkMenuRaw) or {}
                 loaded[row.id] = {
                     id = row.id,
                     label = row.label,
@@ -446,6 +512,7 @@ function LoadAllClubs()
                     society_percentage = tonumber(row.society_percentage) or 0,
                     jobs = NormalizeJobs(jobsDecoded),
                     entities = {},
+                    drink_menu = drinkMenu,
                 }
             end
             for i = 1, #(entityRows or {}) do
@@ -705,11 +772,12 @@ MySQL.ready(function()
             coords JSON NOT NULL,
             society_percentage INT DEFAULT 0,
             jobs JSON NULL,
+            drink_menu JSON NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         )
     ]], {}, function()
-        -- Existing DBs: run once: ALTER TABLE pickle_clubs ADD COLUMN society_percentage INT DEFAULT 0, ADD COLUMN jobs JSON NULL; (society name = primary job name)
+        MySQL.Async.execute("ALTER TABLE pickle_clubs ADD COLUMN drink_menu JSON NULL", {}, function() end)
         MySQL.Async.execute([[
             CREATE TABLE IF NOT EXISTS pickle_club_entities (
                 id INT AUTO_INCREMENT PRIMARY KEY,

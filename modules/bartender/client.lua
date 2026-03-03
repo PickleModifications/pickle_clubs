@@ -176,28 +176,29 @@ function GenerateFlavorWeightsFromItemName(itemName)
     return {}
 end
 
--- Generate item name from flavorWeights
+-- Generate item name from flavorWeights (taste flavors only; alcohol base is excluded from name)
 -- Single flavor: {flavor_name}_drink
 -- Mixed drinks: Sort top 2 flavors alphabetically -> {flavor1}_{flavor2}_bar_drink
 function GenerateDrinkItemName(flavorWeights)
     if not flavorWeights or next(flavorWeights) == nil then
         return nil
     end
-    
-    -- Collect flavors with their weights
+    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
+
+    -- Collect taste flavors only (exclude alcohol base)
     local flavorList = {}
     for flavorIndex, weight in pairs(flavorWeights) do
-        if weight > 0.001 then -- Only include significant flavors
-            local flavor = Config.Bartender.flavors[tonumber(flavorIndex)]
+        local idx = tonumber(flavorIndex)
+        if idx and idx ~= alcoholIdx and weight > 0.001 then
+            local flavor = Config.Bartender.flavors[idx]
             if flavor then
-                -- Convert label to lowercase with underscores (sanitize for item name)
                 local flavorName = string.lower(flavor.label)
-                flavorName = string.gsub(flavorName, "%s+", "_") -- Replace spaces with underscores
-                flavorName = string.gsub(flavorName, "[^%w_]", "") -- Remove special characters
+                flavorName = string.gsub(flavorName, "%s+", "_")
+                flavorName = string.gsub(flavorName, "[^%w_]", "")
                 table.insert(flavorList, {
                     name = flavorName,
                     weight = weight,
-                    index = tonumber(flavorIndex)
+                    index = idx
                 })
             end
         end
@@ -452,10 +453,11 @@ function SpawnOrderNPC(orderData)
         OrderNPCs[stationId] = {}
     end
     
-    -- Request model
-    local modelHash = GetHashKey(orderData.npcModel)
+    -- Use server-provided model only (so all clients spawn the same ped)
+    local modelName = (type(orderData.npcModel) == "string" and orderData.npcModel ~= "") and orderData.npcModel or "a_m_m_skater_01"
+    local modelHash = GetHashKey(modelName)
     if not IsModelInCdimage(modelHash) then
-        modelHash = `a_m_m_skater_01` -- Fallback
+        modelHash = `a_m_m_skater_01`
     end
     
     RequestModel(modelHash)
@@ -491,19 +493,35 @@ function SpawnOrderNPC(orderData)
     SetModelAsNoLongerNeeded(modelHash)
 end
 
+-- Get station coords and heading for any client (from LoadedStations or current interaction)
+local function GetStationTransform(stationId)
+    if CURRENT_INTERACTION and CURRENT_INTERACTION.stationId == stationId and CURRENT_INTERACTION.coords then
+        return CURRENT_INTERACTION.coords, CURRENT_INTERACTION.heading or 0.0
+    end
+    local station = LoadedStations[stationId]
+    if not station then return nil, nil end
+    local coords = station.coords
+    if type(coords) == "table" then
+        coords = vector3(coords.x or coords[1], coords.y or coords[2], coords.z or coords[3])
+    end
+    return coords, (station.heading or 0.0)
+end
+
 function UpdateQueuePositions(stationId, heading, queueData)
-    if not CURRENT_INTERACTION or CURRENT_INTERACTION.stationId ~= stationId then return end
     if not OrderNPCs[stationId] then return end
-    
+    local coords, stationHeading = GetStationTransform(stationId)
+    if not coords then return end
+    local useHeading = heading or stationHeading or 0.0
+
     local npcsToWalk = {} -- Track NPCs that need to walk
-    
+
     -- Update queue indices from server data
     if queueData then
         for orderId, queueIndex in pairs(queueData) do
             if OrderNPCs[stationId][orderId] then
                 local oldIndex = OrderNPCs[stationId][orderId].queueIndex or 0
                 OrderNPCs[stationId][orderId].queueIndex = queueIndex
-                
+
                 -- If queue index changed and NPC exists, mark for walking
                 if oldIndex ~= queueIndex and DoesEntityExist(OrderNPCs[stationId][orderId].npc) then
                     table.insert(npcsToWalk, {orderId = orderId, queueIndex = queueIndex})
@@ -511,34 +529,31 @@ function UpdateQueuePositions(stationId, heading, queueData)
             end
         end
     end
-    
-    -- Make NPCs walk to their new positions
+
+    -- Make NPCs walk to their new positions (all clients that have the NPCs)
     for i = 1, #npcsToWalk do
         local data = npcsToWalk[i]
         if OrderNPCs[stationId][data.orderId] then
-            WalkNPCToQueuePosition(stationId, OrderNPCs[stationId][data.orderId].npc, data.orderId, data.queueIndex, heading)
+            WalkNPCToQueuePosition(stationId, OrderNPCs[stationId][data.orderId].npc, data.orderId, data.queueIndex, coords, useHeading)
         end
     end
-    
+
     -- Recalculate and correct positions for all NPCs that haven't moved (queue index unchanged and not walking)
-    -- Only update NPCs that are still in the queue (present in queueData)
     if queueData then
-        local forwardVector = CalculateForwardVector(CURRENT_INTERACTION.heading)
-        local rightVector = vector3(math.cos(math.rad(CURRENT_INTERACTION.heading + 90)), math.sin(math.rad(CURRENT_INTERACTION.heading + 90)), 0.0)
-        
+        local forwardVector = CalculateForwardVector(useHeading)
+        local rightVector = vector3(math.cos(math.rad(useHeading + 90)), math.sin(math.rad(useHeading + 90)), 0.0)
+
         for orderId, queueIndex in pairs(queueData) do
             local npcData = OrderNPCs[stationId][orderId]
             if npcData and DoesEntityExist(npcData.npc) then
-                -- Only update if not currently walking (queue index didn't change)
                 if not npcData.isWalking then
-                    local basePos = CURRENT_INTERACTION.coords + (forwardVector * -1.5) + vector3(0.0, 0.0, -1.0)
+                    local basePos = coords + (forwardVector * -1.5) + vector3(0.0, 0.0, -1.0)
                     if queueIndex > 0 then
                         basePos = basePos + (rightVector * (Config.Bartender.orderQueueSpacing * queueIndex))
                     end
-                    
-                    -- Update NPC position and heading (flip heading 180 degrees to face towards interaction)
+
                     SetEntityCoords(npcData.npc, basePos.x, basePos.y, basePos.z)
-                    SetEntityHeading(npcData.npc, CURRENT_INTERACTION.heading)
+                    SetEntityHeading(npcData.npc, (useHeading + 180.0) % 360.0)
                     FreezeEntityPosition(npcData.npc, true)
                 end
             end
@@ -546,36 +561,31 @@ function UpdateQueuePositions(stationId, heading, queueData)
     end
 end
 
-function WalkNPCToQueuePosition(stationId, npc, orderId, queueIndex, heading)
-    if not CURRENT_INTERACTION or CURRENT_INTERACTION.stationId ~= stationId then return end
-    if not DoesEntityExist(npc) or not OrderNPCs[stationId] or not OrderNPCs[stationId][orderId] then return end
-    
-    -- Unfreeze NPC to allow walking
+function WalkNPCToQueuePosition(stationId, npc, orderId, queueIndex, coords, heading)
+    if not coords or not DoesEntityExist(npc) or not OrderNPCs[stationId] or not OrderNPCs[stationId][orderId] then return end
+    local useHeading = heading or 0.0
+
     FreezeEntityPosition(npc, false)
     OrderNPCs[stationId][orderId].isWalking = true
-    
-    -- Calculate target position
-    local forwardVector = CalculateForwardVector(CURRENT_INTERACTION.heading)
-    local rightVector = vector3(math.cos(math.rad(CURRENT_INTERACTION.heading + 90)), math.sin(math.rad(CURRENT_INTERACTION.heading + 90)), 0.0)
-    local basePos = CURRENT_INTERACTION.coords + (forwardVector * -1.5)
+
+    local forwardVector = CalculateForwardVector(useHeading)
+    local rightVector = vector3(math.cos(math.rad(useHeading + 90)), math.sin(math.rad(useHeading + 90)), 0.0)
+    local basePos = coords + (forwardVector * -1.5)
     if queueIndex > 0 then
         basePos = basePos + (rightVector * (Config.Bartender.orderQueueSpacing * queueIndex))
     end
-    
-    -- Make NPC walk to position
+
     TaskGoStraightToCoord(npc, basePos.x, basePos.y, basePos.z, 1.0, -1, 0.0, 0.0)
-    
-    -- Monitor when NPC reaches destination
+
     CreateThread(function()
         while DoesEntityExist(npc) and OrderNPCs[stationId] and OrderNPCs[stationId][orderId] and OrderNPCs[stationId][orderId].isWalking do
             Wait(500)
             local npcCoords = GetEntityCoords(npc)
             local distance = #(npcCoords - basePos)
             if distance < 0.25 then
-                -- NPC reached destination, correct position and freeze
                 ClearPedTasks(npc)
                 SetEntityCoords(npc, basePos.x, basePos.y, basePos.z - 1.0)
-                SetEntityHeading(npc, (CURRENT_INTERACTION.heading + 180.0) % 360.0)
+                SetEntityHeading(npc, (useHeading + 180.0) % 360.0)
                 FreezeEntityPosition(npc, true)
                 OrderNPCs[stationId][orderId].isWalking = false
                 break
@@ -589,11 +599,9 @@ function DeleteOrderNPC(stationId, orderId)
     
     local npc = OrderNPCs[stationId][orderId].npc
     if DoesEntityExist(npc) then
-        -- Make NPC walk away before deleting
-        if CURRENT_INTERACTION and CURRENT_INTERACTION.stationId == stationId then
-            MakeNPCWalkAway(npc, CURRENT_INTERACTION.coords, CURRENT_INTERACTION.heading)
-            
-            -- Delete after walking to the right
+        local coords, heading = GetStationTransform(stationId)
+        if coords and heading then
+            MakeNPCWalkAway(npc, coords, heading)
             SetTimeout(2000, function()
                 if DoesEntityExist(npc) then
                     DeleteEntity(npc)
@@ -603,7 +611,7 @@ function DeleteOrderNPC(stationId, orderId)
             DeleteEntity(npc)
         end
     end
-    
+
     OrderNPCs[stationId][orderId] = nil
 end
 
@@ -630,9 +638,9 @@ function DeleteAllOrderNPCs(stationId)
     OrderNPCs[stationId] = nil
     CurrentOrders[stationId] = nil
     BartenderServiceActive[stationId] = false
-    
-    if not CURRENT_INTERACTION or CURRENT_INTERACTION.stationId ~= stationId then
-        -- If no interaction data, delete immediately
+
+    local coords, heading = GetStationTransform(stationId)
+    if not coords or not heading then
         for i = 1, #npcsToDelete do
             if DoesEntityExist(npcsToDelete[i]) then
                 DeleteEntity(npcsToDelete[i])
@@ -640,16 +648,14 @@ function DeleteAllOrderNPCs(stationId)
         end
         return
     end
-    
-    -- Make all NPCs walk away to the right
+
     for i = 1, #npcsToDelete do
         local npc = npcsToDelete[i]
         if DoesEntityExist(npc) then
-            MakeNPCWalkAway(npc, CURRENT_INTERACTION.coords, CURRENT_INTERACTION.heading)
+            MakeNPCWalkAway(npc, coords, heading)
         end
     end
-    
-    -- Delete all NPCs after they've walked to the right
+
     SetTimeout(3000, function()
         for i = 1, #npcsToDelete do
             if DoesEntityExist(npcsToDelete[i]) then
@@ -756,6 +762,7 @@ function CheckDrinkOnCoaster(drinkEntity)
         local stationId = CURRENT_INTERACTION.stationId
         
         -- Find the current order (first in queue - queueIndex 0) for this station
+        -- NPC orders: get from OrderNPCs; Player orders: get from CurrentOrders (no NPC)
         local currentOrderId = nil
         if OrderNPCs[stationId] then
             for orderId, npcData in pairs(OrderNPCs[stationId]) do
@@ -765,26 +772,33 @@ function CheckDrinkOnCoaster(drinkEntity)
                 end
             end
         end
+        if not currentOrderId and CurrentOrders[stationId] and CurrentOrders[stationId].orderId then
+            currentOrderId = CurrentOrders[stationId].orderId
+        end
         
         if currentOrderId then
-            -- Check if drink is near the current order NPC
-            local npcData = OrderNPCs[stationId][currentOrderId]
+            -- Check if drink is near the current order NPC (NPC orders) or on coaster (player orders)
+            local npcData = OrderNPCs[stationId] and OrderNPCs[stationId][currentOrderId]
+            local isPlayerOrder = CurrentOrders[stationId] and CurrentOrders[stationId].isPlayerOrder
+            local shouldSubmit = false
             if npcData and DoesEntityExist(npcData.npc) then
                 local npcCoords = GetEntityCoords(npcData.npc)
                 local distance = #(drinkCoords - npcCoords)
-                
-                if distance < 2.0 then -- Within 2 units of current order NPC
-                    -- Submit drink
-                    if drinkData.flavorWeights then
-                        SubmittedDrinks[drinkEntity] = true
-                        TriggerServerEvent("pickle_clubs:submitDrink", stationId, currentOrderId, drinkData.flavorWeights)
-                        INT_ENTITIES[drinkEntity].progress = 0.0
-                        INT_ENTITIES[drinkEntity].flavorWeights = {}
-                        SetTimeout(1000, function() 
-                            SubmittedDrinks[drinkEntity] = nil
-                        end)
-                    end
+                if distance < 2.0 then
+                    shouldSubmit = true
                 end
+            elseif isPlayerOrder then
+                -- Player order: drink on coaster is enough (no NPC to check distance to)
+                shouldSubmit = true
+            end
+            if shouldSubmit and drinkData.flavorWeights then
+                SubmittedDrinks[drinkEntity] = true
+                TriggerServerEvent("pickle_clubs:submitDrink", stationId, currentOrderId, drinkData.flavorWeights)
+                INT_ENTITIES[drinkEntity].progress = 0.0
+                INT_ENTITIES[drinkEntity].flavorWeights = {}
+                SetTimeout(1000, function()
+                    SubmittedDrinks[drinkEntity] = nil
+                end)
             end
         else
             -- No active order - give player a useable item for the drink
@@ -792,33 +806,30 @@ function CheckDrinkOnCoaster(drinkEntity)
                 local itemName = GenerateDrinkItemName(drinkData.flavorWeights)
                 if itemName then
                     SubmittedDrinks[drinkEntity] = true
-                    
-                    -- Normalize flavorWeights for mixed drinks to 50/50
+                    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
                     local normalizedWeights = {}
                     local flavorList = {}
+                    local alcoholWeight = 0
                     for flavorIndex, weight in pairs(drinkData.flavorWeights) do
-                        if weight > 0.001 then
-                            table.insert(flavorList, {
-                                index = tonumber(flavorIndex),
-                                weight = weight
-                            })
+                        local idx = tonumber(flavorIndex)
+                        if idx and weight > 0.001 then
+                            if idx == alcoholIdx then
+                                alcoholWeight = weight
+                            else
+                                table.insert(flavorList, { index = idx, weight = weight })
+                            end
                         end
                     end
-                    
-                    -- Sort by weight
                     table.sort(flavorList, function(a, b) return a.weight > b.weight end)
-                    
-                    -- If it's a mixed drink (2+ flavors), normalize to 50/50
                     if #flavorList >= 2 and flavorList[1].weight < (1.0 - Config.Bartender.mixThreshold) then
-                        -- Mixed drink: use top 2 flavors at 50/50
                         normalizedWeights[flavorList[1].index] = 0.5
                         normalizedWeights[flavorList[2].index] = 0.5
-                    else
-                        -- Single flavor: keep original weight (normalized to 1.0)
+                    elseif #flavorList >= 1 then
                         normalizedWeights[flavorList[1].index] = 1.0
                     end
-                    
-                    -- Send normalized flavorWeights to server for metadata
+                    if alcoholWeight > 0.001 then
+                        normalizedWeights[alcoholIdx] = math.min(1.0, alcoholWeight)
+                    end
                     TriggerServerEvent("pickle_clubs:giveDrinkItem", itemName, normalizedWeights)
                     -- Clear the drink after giving item
                     INT_ENTITIES[drinkEntity].progress = 0.0
@@ -842,6 +853,35 @@ RegisterNetEvent("pickle_clubs:drinkSubmissionResult", function(success, feedbac
         ShowNotification("" .. feedback)
     end
 end)
+
+function OpenPlayerOrderDrinkSelector(stationId)
+    lib.callback("pickle_clubs:getClubDrinkMenu", false, function(drinkList)
+        if not drinkList or #drinkList == 0 then
+            ShowNotification("No drinks available")
+            return
+        end
+        local contextOptions = {}
+        for _, opt in ipairs(drinkList) do
+            local title = opt.name or ("Drink " .. tostring(opt.drinkKey))
+            if opt.price and opt.price > 0 then
+                title = title .. (" - $%d"):format(opt.price)
+            end
+            table.insert(contextOptions, {
+                title = title,
+                description = "Order this drink",
+                onSelect = function()
+                    TriggerServerEvent("pickle_clubs:placePlayerOrder", stationId, opt.drinkKey, opt.requiredFlavorIndices)
+                end,
+            })
+        end
+        lib.registerContext({
+            id = "player_order_drinks_" .. (stationId or "unknown"),
+            title = "Place Order",
+            options = contextOptions,
+        })
+        lib.showContext("player_order_drinks_" .. (stationId or "unknown"))
+    end, stationId)
+end
 
 function OpenBartenderRegister()
     if not CURRENT_INTERACTION or not CURRENT_INTERACTION.stationId then
@@ -952,6 +992,19 @@ function LoadStation(station)
                             end,
                         },
                         {
+                            title = "Place Order",
+                            description = "Order a drink from the bar",
+                            onSelect = function()
+                                lib.callback("pickle_clubs:canPlacePlayerOrder", false, function(canPlace, reason)
+                                    if not canPlace then
+                                        ShowNotification(reason or "Cannot place order")
+                                        return
+                                    end
+                                    OpenPlayerOrderDrinkSelector(stationId)
+                                end, stationId)
+                            end,
+                        },
+                        {
                             title = "Start Bartending",
                             description = "Begin bartending at this station",
                             onSelect = function()
@@ -962,7 +1015,33 @@ function LoadStation(station)
                 })
                 lib.showContext("station_interact_" .. stationId)
             else
-                StartStationInteraction({stationId = stationId})
+                lib.registerContext({
+                    id = "station_interact_customer_" .. stationId,
+                    title = "Bartending Station",
+                    options = {
+                        {
+                            title = "Place Order",
+                            description = "Order a drink from the bar",
+                            onSelect = function()
+                                lib.callback("pickle_clubs:canPlacePlayerOrder", false, function(canPlace, reason)
+                                    if not canPlace then
+                                        ShowNotification(reason or "Cannot place order")
+                                        return
+                                    end
+                                    OpenPlayerOrderDrinkSelector(stationId)
+                                end, stationId)
+                            end,
+                        },
+                        {
+                            title = "Start Bartending",
+                            description = "Begin bartending at this station",
+                            onSelect = function()
+                                StartStationInteraction({stationId = stationId})
+                            end,
+                        },
+                    },
+                })
+                lib.showContext("station_interact_customer_" .. stationId)
             end
         end)
     end)
@@ -979,32 +1058,26 @@ end
 
 function StartStationInteraction(data)
     local stationId = data and data.stationId or data
-    if not stationId or not LoadedStations[stationId] then 
+    if not stationId or not LoadedStations[stationId] then
         ShowNotification("Station not found")
-        return 
+        return
     end
-    
+
     local station = LoadedStations[stationId]
 
-    -- Hide persistent register prop while bartending (interactive register will be shown)
-    if StationRegisterProps[stationId] and DoesEntityExist(StationRegisterProps[stationId]) then
-        DeleteEntity(StationRegisterProps[stationId])
-        StationRegisterProps[stationId] = nil
-    end
-
-    -- Check if station is already controlled
-    TriggerServerEvent("pickle_clubs:setStationController", stationId, "interaction")
-    
-    -- Wait a moment for server response (if denied, stationControlDenied event will fire)
-    CreateThread(function()
-        Wait(200)
-        -- If we got denied, the event will fire and we won't proceed
-        -- Otherwise, proceed with starting interaction
-        -- Note: Register visibility is handled by server event (pickle_clubs:hideStationRegister)
-        if not CURRENT_INTERACTION then
-            CreateStationInteraction(station)
+    -- Request control from server; only proceed if granted (so "in use" actually blocks entry)
+    lib.callback("pickle_clubs:requestStationControl", false, function(granted, message)
+        if not granted then
+            ShowNotification(message or "Station is already in use")
+            return
         end
-    end)
+        -- Hide persistent register prop while bartending (interactive register will be shown)
+        if StationRegisterProps[stationId] and DoesEntityExist(StationRegisterProps[stationId]) then
+            DeleteEntity(StationRegisterProps[stationId])
+            StationRegisterProps[stationId] = nil
+        end
+        CreateStationInteraction(station)
+    end, stationId, "interaction")
 end
 
 -- Start interaction for a station
@@ -1487,27 +1560,39 @@ CreateThread(function()
                 local textY = position.z + 0.15 -- Start above the drink
                 local textLines = {}
                 
-                -- Collect all flavors with their percentages
+                -- Collect all flavors with their percentages (alcohol base shown as "Strength")
+                local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
                 for flavorIndex, weight in pairs(flavorWeights) do
-                    if weight > 0.001 then -- Only show flavors with significant amount
-                        local flavor = Config.Bartender.flavors[flavorIndex]
-                        local percentage = math.floor(weight * 100 + 0.5) -- Round to nearest integer
-                        if flavor then
-                            local label = flavor.label or (_L("bartender_flavor_prefix") .. flavorIndex)
-                            table.insert(textLines, {type = "progress", label = label, value = percentage})
+                    if weight > 0.001 then
+                        local idx = tonumber(flavorIndex)
+                        local flavor = idx and Config.Bartender.flavors[idx]
+                        local percentage = math.floor(weight * 100 + 0.5)
+                        local label
+                        if idx == alcoholIdx then
+                            label = "Strength"
+                        elseif flavor then
+                            label = flavor.label or (_L("bartender_flavor_prefix") .. flavorIndex)
                         else
-                            table.insert(textLines, {type = "progress", label = _L("bartender_flavor_prefix") .. flavorIndex, value = percentage})
+                            label = _L("bartender_flavor_prefix") .. flavorIndex
                         end
+                        table.insert(textLines, {type = "progress", label = label, value = percentage})
                     end
                 end
                 
-                -- Sort by weight (descending) so most prominent flavors are shown first
+                -- Sort by weight (descending)
                 table.sort(textLines, function(a, b) return a.value > b.value end)
+                -- Title uses taste flavors only (exclude Strength/alcohol base)
+                local tasteLines = {}
+                for _, row in ipairs(textLines) do
+                    if row.label ~= "Strength" then tasteLines[#tasteLines + 1] = row end
+                end
                 local title = ""
-                if #textLines == 1 or (textLines[1].value / 100) >= (1.0 - Config.Bartender.mixThreshold) then
-                    title = textLines[1].label
-                else
-                    title = textLines[1].label .. "-" .. textLines[2].label
+                if #tasteLines >= 1 then
+                    if #tasteLines == 1 or (tasteLines[1].value / 100) >= (1.0 - Config.Bartender.mixThreshold) then
+                        title = tasteLines[1].label
+                    else
+                        title = tasteLines[1].label .. "-" .. tasteLines[2].label
+                    end
                 end
                 if INT_ENTITIES[entity].progress >= 1.0 then 
                     table.insert(textLines, {type = "text", label = _L("bartender_place_drink_coaster"), center = true })

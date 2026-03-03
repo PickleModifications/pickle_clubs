@@ -73,6 +73,18 @@ local function GetStation(stationId)
     return StationRegistry[stationId]
 end
 
+local function GetClubIdFromStationId(stationId)
+    if type(stationId) ~= "string" then return nil end
+    local clubIdStr = stationId:match("^(%d+):")
+    return clubIdStr and tonumber(clubIdStr) or nil
+end
+
+local function GetClubDrinkMenuForStation(stationId)
+    local clubId = GetClubIdFromStationId(stationId)
+    if not clubId or not GetClubDrinkMenu then return nil end
+    return GetClubDrinkMenu(clubId)
+end
+
 local function IsStationControlled(stationId, controlType)
     if not StationControllers[stationId] then return false end
     if controlType then
@@ -82,6 +94,44 @@ local function IsStationControlled(stationId, controlType)
         if controller then return true end
     end
     return false
+end
+
+-- Ensure StationData exists and timer is running (for player orders and/or NPC service)
+local function EnsureStationData(stationId)
+    if StationData[stationId] then return end
+    local station = GetStation(stationId)
+    if not station then return end
+    local coords = station.coords
+    if type(coords) == "table" then
+        coords = vector3(coords.x or coords[1], coords.y or coords[2], coords.z or coords[3])
+    end
+    StationData[stationId] = {
+        orderQueue = {},
+        serviceActive = false,
+        interactionData = {
+            coords = coords,
+            heading = station.heading or 0.0,
+        },
+    }
+    CreateThread(function()
+        while StationData[stationId] do
+            Wait(1000)
+            local sd = StationData[stationId]
+            if not sd then break end
+            local expiredOrders = {}
+            for i = 1, #sd.orderQueue do
+                local order = sd.orderQueue[i]
+                order.timer = order.timer - 1
+                if order.timer <= 0 then
+                    table.insert(expiredOrders, order.id)
+                end
+            end
+            for _, orderId in ipairs(expiredOrders) do
+                ExpireOrder(stationId, orderId)
+            end
+            UpdateCurrentOrderDisplay(stationId)
+        end
+    end)
 end
 
 local function SetStationController(stationId, source, controlType)
@@ -94,6 +144,9 @@ local function SetStationController(stationId, source, controlType)
         source = source,
         type = controlType,
     }
+    if controlType == "interaction" then
+        EnsureStationData(stationId)
+    end
     return true
 end
 
@@ -116,16 +169,13 @@ local function ClearStationController(stationId, controlType)
     end
 end
 
--- Generate all possible drink item names from configured flavors
+-- Generate all possible drink item names (taste flavors only; alcohol base excluded)
 function GenerateAllDrinkItems()
     local items = {}
     local flavors = Config.Bartender.flavors
-    
-    if not flavors or #flavors == 0 then
-        return items
-    end
-    
-    -- Helper function to sanitize flavor name for item name
+    if not flavors or #flavors == 0 then return items end
+    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
+
     local function sanitizeFlavorName(label)
         local name = string.lower(label)
         name = string.gsub(name, "%s+", "_") -- Replace spaces with underscores
@@ -133,8 +183,8 @@ function GenerateAllDrinkItems()
         return name
     end
     
-    -- Generate single flavor drinks
     for i = 1, #flavors do
+        if i == alcoholIdx then goto continue_single end
         local flavor = flavors[i]
         if flavor and flavor.label then
             local itemName = sanitizeFlavorName(flavor.label) .. "_drink"
@@ -145,11 +195,12 @@ function GenerateAllDrinkItems()
                 flavorIndex = i
             })
         end
+        ::continue_single::
     end
-    
-    -- Generate mixed drinks (all combinations of 2 flavors, sorted alphabetically)
+
     for i = 1, #flavors do
         for j = i + 1, #flavors do
+            if i == alcoholIdx or j == alcoholIdx then goto continue_mixed end
             local flavor1 = flavors[i]
             local flavor2 = flavors[j]
             if flavor1 and flavor1.label and flavor2 and flavor2.label then
@@ -168,15 +219,45 @@ function GenerateAllDrinkItems()
                     flavorIndices = {i, j}
                 })
             end
+            ::continue_mixed::
         end
     end
-    
+
     return items
 end
 
 -- Get list of all possible drink items (exported for use in item files)
 function GetAllDrinkItems()
     return GenerateAllDrinkItems()
+end
+
+-- Generate item name from flavorWeights (taste flavors only; alcohol base excluded)
+local function GenerateDrinkItemNameFromWeights(flavorWeights)
+    if not flavorWeights or next(flavorWeights) == nil then return nil end
+    local flavors = Config.Bartender and Config.Bartender.flavors or {}
+    local mixThreshold = Config.Bartender and Config.Bartender.mixThreshold or 0.25
+    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
+    local flavorList = {}
+    for flavorIndex, weight in pairs(flavorWeights) do
+        local idx = tonumber(flavorIndex)
+        if idx and idx ~= alcoholIdx and weight > 0.001 then
+            local flavor = flavors[idx]
+            if flavor and flavor.label then
+                local flavorName = string.lower(flavor.label)
+                flavorName = string.gsub(flavorName, "%s+", "_")
+                flavorName = string.gsub(flavorName, "[^%w_]", "")
+                table.insert(flavorList, { name = flavorName, weight = weight })
+            end
+        end
+    end
+    if #flavorList == 0 then return nil end
+    table.sort(flavorList, function(a, b) return a.weight > b.weight end)
+    if #flavorList == 1 or flavorList[1].weight >= (1.0 - mixThreshold) then
+        return flavorList[1].name .. "_drink"
+    end
+    local topFlavors = {flavorList[1].name, flavorList[2].name}
+    table.sort(topFlavors)
+    return topFlavors[1] .. "_" .. topFlavors[2] .. "_bar_drink"
 end
 
 -- Calculate forwardVector from heading using trigonometry
@@ -232,17 +313,19 @@ end
 function GenerateDrinkOrder()
     local flavors = Config.Bartender.flavors
     if not flavors or #flavors == 0 then return "Unknown Drink", {} end
-    
+    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
+
+    -- Only orderable flavors (exclude alcohol base)
+    local availableIndices = {}
+    for i = 1, #flavors do
+        if i ~= alcoholIdx then table.insert(availableIndices, i) end
+    end
+    if #availableIndices == 0 then return "Unknown Drink", {} end
+
     -- Randomly select 1-2 flavors
     local numFlavors = math.random(1, 2)
     local selectedFlavorIndices = {}
     local selectedFlavorLabels = {}
-    
-    -- Select unique flavors
-    local availableIndices = {}
-    for i = 1, #flavors do
-        table.insert(availableIndices, i)
-    end
     
     for i = 1, numFlavors do
         if #availableIndices == 0 then break end
@@ -307,11 +390,17 @@ function SpawnNextOrder(stationId)
         return
     end
     
-    -- Select random NPC model
+    -- Select random NPC model server-side so all clients spawn the same ped
     local npcModels = Config.Bartender.orderNPCs
-    local npcModel = npcModels[math.random(1, #npcModels)]
-    
-    -- Trigger spawn event to all clients with stationId
+    local npcModel = "a_m_m_skater_01" -- default fallback
+    if npcModels and #npcModels > 0 then
+        npcModel = npcModels[math.random(1, #npcModels)]
+    end
+    if type(npcModel) ~= "string" or npcModel == "" then
+        npcModel = "a_m_m_skater_01"
+    end
+
+    -- Trigger spawn event to all clients (model is server-authoritative)
     TriggerClientEvent("pickle_clubs:spawnOrderNPC", -1, {
         stationId = stationId,
         orderId = order.id,
@@ -335,12 +424,19 @@ function UpdateCurrentOrderDisplay(stationId)
     -- First order in queue is the current order
     if #stationData.orderQueue > 0 then
         local currentOrder = stationData.orderQueue[1]
-        TriggerClientEvent("pickle_clubs:updateOrder", -1, {
+        local payload = {
             stationId = stationId,
+            orderId = currentOrder.id,
             orderName = currentOrder.drinkName,
             timeRemaining = currentOrder.timer,
             active = true,
-        })
+            isPlayerOrder = currentOrder.isPlayerOrder == true,
+        }
+        if currentOrder.isPlayerOrder and currentOrder.playerSource then
+            local playerName = GetPlayerCharacterName(currentOrder.playerSource)
+            payload.orderPlayerName = playerName
+        end
+        TriggerClientEvent("pickle_clubs:updateOrder", -1, payload)
     else
         TriggerClientEvent("pickle_clubs:updateOrder", -1, {
             stationId = stationId,
@@ -369,13 +465,26 @@ function RemoveOrderFromQueue(stationId, orderId)
     return false
 end
 
-function ExpireOrder(stationId, orderId)
-    -- Delete NPC on all clients
-    TriggerClientEvent("pickle_clubs:deleteOrderNPC", -1, stationId, orderId)
-    
+function ExpireOrder(stationId, orderId, skipPlayerExpiredNotify)
+    local stationData = StationData[stationId]
+    local order = nil
+    if stationData then
+        for i = 1, #stationData.orderQueue do
+            if stationData.orderQueue[i].id == orderId then
+                order = stationData.orderQueue[i]
+                break
+            end
+        end
+    end
+    -- Delete NPC only for NPC orders (player orders have no NPC)
+    if not order or not order.isPlayerOrder then
+        TriggerClientEvent("pickle_clubs:deleteOrderNPC", -1, stationId, orderId)
+    end
+    if order and order.isPlayerOrder and order.playerSource and not skipPlayerExpiredNotify then
+        ShowNotification(order.playerSource, "Your order expired")
+    end
     -- Remove from queue
     RemoveOrderFromQueue(stationId, orderId)
-    
     -- Update display
     UpdateCurrentOrderDisplay(stationId)
 end
@@ -386,60 +495,29 @@ function StartBartenderService(stationId, coords, heading)
         print("ERROR: Station " .. stationId .. " not found")
         return false
     end
-    
-    -- Check if station already has active service
+
     if StationData[stationId] and StationData[stationId].serviceActive then
         print("ERROR: Bartender service already active for station " .. stationId)
         return false
     end
-    
-    -- Initialize station data if needed
-    if not StationData[stationId] then
-        StationData[stationId] = {
-            orderQueue = {},
-            serviceActive = false,
-            interactionData = nil,
-        }
-    end
-    
-    StationData[stationId].serviceActive = true
-    -- Ensure coords is vector3
+
+    EnsureStationData(stationId)
+    local stationData = StationData[stationId]
+    if not stationData then return false end
+
+    stationData.serviceActive = true
     if type(coords) == "table" then
         coords = vector3(coords.x, coords.y, coords.z)
     end
-    StationData[stationId].interactionData = {
+    stationData.interactionData = {
         coords = coords,
         heading = heading,
     }
-    
-    -- Clear any existing orders
-    StationData[stationId].orderQueue = {}
-    
-    -- Start order timer thread
-    StationData[stationId].timerThread = CreateThread(function()
-        while StationData[stationId] and StationData[stationId].serviceActive do
-            Wait(1000) -- Update every second
-            
-            -- Update timers
-            local expiredOrders = {}
-            for i = 1, #StationData[stationId].orderQueue do
-                local order = StationData[stationId].orderQueue[i]
-                order.timer = order.timer - 1
-                if order.timer <= 0 then
-                    table.insert(expiredOrders, order.id)
-                end
-            end
-            
-            -- Expire orders
-            for i = 1, #expiredOrders do
-                ExpireOrder(stationId, expiredOrders[i])
-            end
-            
-            -- Update display
-            UpdateCurrentOrderDisplay(stationId)
-        end
-    end)
-    
+
+    -- Do not clear orderQueue; player orders may already be in queue
+
+    -- Timer thread is already running from EnsureStationData
+
     -- Start spawn thread
     StationData[stationId].spawnThread = CreateThread(function()
         while StationData[stationId] and StationData[stationId].serviceActive do
@@ -532,31 +610,38 @@ function ValidateDrink(stationId, orderId, flavorWeights)
     if not requiredFlavors or #requiredFlavors == 0 then
         return false, "Invalid order requirements"
     end
-    
-    -- Calculate total weight of all flavors in drink
+
+    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
+
+    -- Total weight and taste-only weight (alcohol is base, not a flavor for validation)
     local totalWeight = 0
+    local alcoholWeight = flavorWeights[alcoholIdx] or flavorWeights[tostring(alcoholIdx)] or 0
     for flavorIndex, weight in pairs(flavorWeights) do
         totalWeight = totalWeight + weight
     end
-    
+    local tasteWeight = totalWeight - alcoholWeight
+    if tasteWeight < 0 then tasteWeight = 0 end
+
     if totalWeight < 0.5 then
         return false, "Drink not full enough"
     end
-    
+    if tasteWeight < 0.01 then
+        return false, "Drink must have flavor"
+    end
+
     -- Check if drink has all required flavors (with minimum threshold)
     local requiredWeight = 0
     for i = 1, #requiredFlavors do
         local flavorIndex = requiredFlavors[i]
-        -- Ensure flavorIndex is a number for comparison
         local weight = flavorWeights[tonumber(flavorIndex)] or flavorWeights[flavorIndex] or 0
         if weight < 0.01 then
             return false, "Missing required flavor"
         end
         requiredWeight = requiredWeight + weight
     end
-    
-    -- Calculate percentage of required flavors
-    local requiredPercentage = requiredWeight / totalWeight
+
+    -- Percentage of taste that is required flavors (alcohol base excluded)
+    local requiredPercentage = requiredWeight / tasteWeight
     
     -- For single-flavor orders, require 85%+ of that flavor (allows for minor mixing)
     -- For multi-flavor orders, require 70%+ to be the required flavors
@@ -567,6 +652,25 @@ function ValidateDrink(stationId, orderId, flavorWeights)
     end
     
     return true, "Correct"
+end
+
+-- Track registered drink items to avoid duplicate registrations (used by submitDrink and giveDrinkItem)
+local RegisteredDrinkItems = {}
+
+local function RegisterDrinkItemIfNeeded(itemName)
+    if RegisteredDrinkItems[itemName] then
+        return -- Already registered
+    end
+    -- Check if item name matches drink pattern
+    if string.match(itemName, "_drink$") or string.match(itemName, "_bar_drink$") then
+        RegisterUsableItem(itemName, function(source, item)
+            local metadata = Config.FrameworkSettings.usableItemMetadata(item, item)
+            local flavorWeights = metadata and metadata.flavorWeights or {}
+            Inventory.RemoveItem(source, itemName, 1)
+            TriggerClientEvent("pickle_clubs:useDrinkItem", source, itemName, flavorWeights)
+        end)
+        RegisteredDrinkItems[itemName] = true
+    end
 end
 
 RegisterNetEvent("pickle_clubs:submitDrink", function(stationId, orderId, flavorWeights)
@@ -584,47 +688,101 @@ RegisterNetEvent("pickle_clubs:submitDrink", function(stationId, orderId, flavor
         return
     end
     
+    local order = stationData.orderQueue[1]
     local isValid, message = ValidateDrink(stationId, orderId, flavorWeights)
     
     if isValid then
-        -- Get station data to check for society configuration
-        local station = GetStation(stationId)
-        local orderPayment = Config.Bartender.orderPayment
-        local playerPayment = orderPayment
-        local societyPayment = 0
-        
-        -- Check if society is configured and calculate split payment
-        if station and station.society_name and station.society_name ~= "" and station.society_percentage and station.society_percentage > 0 then
-            -- Calculate society payment
-            societyPayment = math.floor(orderPayment * (station.society_percentage / 100))
-            -- Player gets the remainder
-            playerPayment = orderPayment - societyPayment
-            
-            -- Send payment to society
-            if societyPayment > 0 then
-                AddSocietyMoney(station.society_name, societyPayment)
+        if order.isPlayerOrder and order.playerSource then
+            -- Player order: give drink item to ordering player
+            local targetSource = order.playerSource
+            if GetPlayerPing(targetSource) > 0 then
+                local itemName = GenerateDrinkItemNameFromWeights(flavorWeights)
+                if itemName then
+                    local mixThreshold = Config.Bartender and Config.Bartender.mixThreshold or 0.25
+                    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
+                    local flavorList = {}
+                    local alcoholWeight = 0
+                    for flavorIndex, weight in pairs(flavorWeights) do
+                        local idx = tonumber(flavorIndex)
+                        if idx == alcoholIdx then
+                            alcoholWeight = weight
+                        elseif idx and weight > 0.001 then
+                            local flavor = Config.Bartender and Config.Bartender.flavors and Config.Bartender.flavors[idx]
+                            if flavor then
+                                table.insert(flavorList, { index = idx, weight = weight })
+                            end
+                        end
+                    end
+                    table.sort(flavorList, function(a, b) return a.weight > b.weight end)
+                    -- Normalized weights keep all flavors including alcohol (strength)
+                    local normalizedWeights = {}
+                    if #flavorList >= 1 then
+                        if #flavorList >= 2 and flavorList[1].weight < (1.0 - mixThreshold) then
+                            normalizedWeights[flavorList[1].index] = 0.5
+                            normalizedWeights[flavorList[2].index] = 0.5
+                        else
+                            normalizedWeights[flavorList[1].index] = 1.0
+                        end
+                    end
+                    if alcoholWeight > 0.001 then
+                        normalizedWeights[alcoholIdx] = math.min(1.0, alcoholWeight)
+                    end
+                    local description = nil
+                    local flavorsConfig = Config.Bartender and Config.Bartender.flavors or {}
+                    if #flavorList == 1 and flavorsConfig[flavorList[1].index] and flavorsConfig[flavorList[1].index].label then
+                        local lab = string.lower(flavorsConfig[flavorList[1].index].label)
+                        description = ("A %s drink."):format(lab)
+                    elseif #flavorList >= 2 then
+                        local l1 = string.lower((flavorsConfig[flavorList[1].index] and flavorsConfig[flavorList[1].index].label) or "")
+                        local l2 = string.lower((flavorsConfig[flavorList[2].index] and flavorsConfig[flavorList[2].index].label) or "")
+                        if l1 > l2 then l1, l2 = l2, l1 end
+                        description = ("A %s-%s mixture."):format(l1, l2)
+                    end
+                    -- Append strength based on alcohol (base) amount
+                    if description and alcoholWeight > 0.001 then
+                        if alcoholWeight >= 0.5 then
+                            description = description .. " Strong."
+                        elseif alcoholWeight >= 0.2 then
+                            description = description .. " (Medium.)"
+                        else
+                            description = description .. " (Light.)"
+                        end
+                    end
+                    local metadata = { flavorWeights = normalizedWeights, description = description }
+                    RegisterDrinkItemIfNeeded(itemName)
+                    if not Inventory.CanCarryItem or Inventory.CanCarryItem(targetSource, itemName, 1) then
+                        Inventory.AddItem(targetSource, itemName, 1, metadata)
+                        ShowNotification(targetSource, "Your drink is ready!")
+                    else
+                        ShowNotification(targetSource, "Your drink is ready but you cannot carry it")
+                    end
+                end
             end
+            ExpireOrder(stationId, orderId, true)
+            TriggerClientEvent("pickle_clubs:drinkSubmissionResult", source, true, "Order fulfilled", nil)
+        else
+            -- NPC order: pay bartender and society
+            local station = GetStation(stationId)
+            local orderPayment = Config.Bartender.orderPayment
+            local playerPayment = orderPayment
+            local societyPayment = 0
+            if station and station.society_name and station.society_name ~= "" and station.society_percentage and station.society_percentage > 0 then
+                societyPayment = math.floor(orderPayment * (station.society_percentage / 100))
+                playerPayment = orderPayment - societyPayment
+                if societyPayment > 0 then
+                    AddSocietyMoney(station.society_name, societyPayment)
+                end
+            end
+            AddMoney(source, playerPayment, "money")
+            local feedbackMessages = Config.Bartender.orderConversations.correct
+            local feedback = feedbackMessages[math.random(1, #feedbackMessages)]
+            ExpireOrder(stationId, orderId)
+            TriggerClientEvent("pickle_clubs:drinkSubmissionResult", source, true, feedback, playerPayment)
         end
-        
-        -- Pay the player
-        AddMoney(source, playerPayment, "money")
-        
-        -- Get random feedback message
-        local feedbackMessages = Config.Bartender.orderConversations.correct
-        local feedback = feedbackMessages[math.random(1, #feedbackMessages)]
-        
-        -- Remove order from queue (ExpireOrder handles deletion and queue update)
-        ExpireOrder(stationId, orderId)
-        
-        -- Send success feedback
-        TriggerClientEvent("pickle_clubs:drinkSubmissionResult", source, true, feedback, playerPayment)
     else
-        -- Get random feedback message
         ShowNotification(source, message)
         local feedbackMessages = Config.Bartender.orderConversations.incorrect
         local feedback = feedbackMessages[math.random(1, #feedbackMessages)]
-        
-        -- Send failure feedback (don't expire order, let them try again)
         TriggerClientEvent("pickle_clubs:drinkSubmissionResult", source, false, feedback)
     end
 end)
@@ -636,34 +794,119 @@ RegisterNetEvent("pickle_clubs:orderCompleted", function(stationId, orderId)
     end
 end)
 
--- Track registered drink items to avoid duplicate registrations
-local RegisteredDrinkItems = {}
+-- Build list of drinks for Place Order UI: { drinkKey, name, price, requiredFlavorIndices }
+lib.callback.register("pickle_clubs:getClubDrinkMenu", function(source, stationId)
+    local menu = GetClubDrinkMenuForStation(stationId)
+    if not menu or type(menu) ~= "table" then return {} end
+    local list = {}
+    for drinkKey, entry in pairs(menu) do
+        if type(entry) == "table" and entry.name then
+            local requiredFlavorIndices = {}
+            if drinkKey:match("^%d+_%d+$") then
+                local i, j = drinkKey:match("^(%d+)_(%d+)$")
+                if i and j then
+                    requiredFlavorIndices = { tonumber(i), tonumber(j) }
+                end
+            else
+                local i = tonumber(drinkKey)
+                if i then requiredFlavorIndices = { i } end
+            end
+            if #requiredFlavorIndices >= 1 then
+                list[#list + 1] = {
+                    drinkKey = drinkKey,
+                    name = entry.name,
+                    price = type(entry.price) == "number" and entry.price or 0,
+                    requiredFlavorIndices = requiredFlavorIndices,
+                }
+            end
+        end
+    end
+    table.sort(list, function(a, b) return (a.drinkKey or "") < (b.drinkKey or "") end)
+    return list
+end)
+
+lib.callback.register("pickle_clubs:canPlacePlayerOrder", function(source, stationId)
+    if not GetStation(stationId) then
+        return false, "Station not found"
+    end
+    if not IsStationControlled(stationId, "interaction") then
+        return false, "No bartender at the bar - try again when someone is serving"
+    end
+    local stationData = StationData[stationId]
+    if not stationData then
+        return false, "Station not ready"
+    end
+    if #stationData.orderQueue >= Config.Bartender.maxActiveOrders then
+        return false, "Too many orders, try again later"
+    end
+    return true
+end)
+
+RegisterNetEvent("pickle_clubs:placePlayerOrder", function(stationId, drinkKey, requiredFlavorIndices)
+    local source = source
+    if not GetStation(stationId) then
+        ShowNotification(source, "Station not found")
+        return
+    end
+    if not IsStationControlled(stationId, "interaction") then
+        ShowNotification(source, "No bartender at the bar - try again when someone is serving")
+        return
+    end
+    local stationData = StationData[stationId]
+    if not stationData then
+        ShowNotification(source, "Station not ready")
+        return
+    end
+    if #stationData.orderQueue >= Config.Bartender.maxActiveOrders then
+        ShowNotification(source, "Too many orders, try again later")
+        return
+    end
+    local flavors = Config.Bartender and Config.Bartender.flavors or {}
+    if not requiredFlavorIndices or type(requiredFlavorIndices) ~= "table" then
+        ShowNotification(source, "Invalid order")
+        return
+    end
+    for _, idx in ipairs(requiredFlavorIndices) do
+        if type(idx) ~= "number" or idx < 1 or idx > #flavors then
+            ShowNotification(source, "Invalid drink selection")
+            return
+        end
+    end
+    local menu = GetClubDrinkMenuForStation(stationId)
+    if not menu or not drinkKey or not menu[drinkKey] then
+        ShowNotification(source, "Invalid drink")
+        return
+    end
+    local drinkName = menu[drinkKey].name or ("Drink " .. tostring(drinkKey))
+    local price = type(menu[drinkKey].price) == "number" and menu[drinkKey].price or 0
+    if price > 0 then
+        local cash = (GetMoney and GetMoney(source, "money")) or 0
+        if cash < price then
+            ShowNotification(source, "Not enough cash")
+            return
+        end
+        RemoveMoney(source, price, "money")
+    end
+    local orderId = GetGameTimer() .. "_" .. math.random(1000, 9999)
+    local timerDuration = Config.Bartender.playerOrderExpireSeconds or Config.Bartender.orderTimerDuration
+    local order = {
+        id = orderId,
+        drinkKey = drinkKey,
+        drinkName = drinkName,
+        requiredFlavorIndices = requiredFlavorIndices,
+        timer = timerDuration,
+        createdAt = GetGameTimer(),
+        stationId = stationId,
+        isPlayerOrder = true,
+        playerSource = source,
+    }
+    table.insert(stationData.orderQueue, order)
+    UpdateCurrentOrderDisplay(stationId)
+    ShowNotification(source, "Order placed: " .. drinkName)
+end)
 
 -- Track equipped drinks for syncing
 local EquippedDrinksServer = {} -- source -> {coords, flavorWeights, color, progress, lastUpdate}
-
--- Register usable item handler for drink items
-local function RegisterDrinkItemIfNeeded(itemName)
-    if RegisteredDrinkItems[itemName] then
-        return -- Already registered
-    end
-    
-    -- Check if item name matches drink pattern
-    if string.match(itemName, "_drink$") or string.match(itemName, "_bar_drink$") then
-        RegisterUsableItem(itemName, function(source, item)
-            -- Get metadata from item
-            local metadata = Config.FrameworkSettings.usableItemMetadata(item, item)
-            local flavorWeights = metadata and metadata.flavorWeights or {}
-            
-            -- Remove item from inventory when used
-            Inventory.RemoveItem(source, itemName, 1)
-            
-            -- Trigger client event to use the drink (alcohol is added server-side when they actually drink, via drinkConsumed)
-            TriggerClientEvent("pickle_clubs:useDrinkItem", source, itemName, flavorWeights)
-        end)
-        RegisteredDrinkItems[itemName] = true
-    end
-end
 
 RegisterNetEvent("pickle_clubs:giveDrinkItem", function(itemName, flavorWeights)
     local source = source
@@ -689,6 +932,12 @@ RegisterNetEvent("pickle_clubs:giveDrinkItem", function(itemName, flavorWeights)
     -- Give item to player
     Inventory.AddItem(source, itemName, 1, metadata)
     ShowNotification(source, "You received a " .. itemName)
+end)
+
+-- Callback so client only proceeds when server grants control (prevents race where client starts interaction despite denial)
+lib.callback.register("pickle_clubs:requestStationControl", function(source, stationId, controlType)
+    local success, message = SetStationController(stationId, source, controlType)
+    return success, (not success and (message or "Station is already in use")) or nil
 end)
 
 RegisterNetEvent("pickle_clubs:setStationController", function(stationId, controlType)

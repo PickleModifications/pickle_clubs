@@ -41,6 +41,8 @@ Config.FrameworkSettings = {
 
 Config.Bartender = {
     mixThreshold = 0.25, -- This is the minimum requirement of a secondary flavor to be considered for a mixed drink.
+    -- Index of the "Alcohol" entry in flavors; this is the base (not orderable). The more poured, the stronger the drink.
+    alcoholFlavorIndex = 4,
     flavors = {
         {
             label = "Strawberry",
@@ -53,6 +55,10 @@ Config.Bartender = {
         {
             label = "Blueberry",
             color = {0, 0, 255},
+        },
+        {
+            label = "Alcohol",
+            color = {255, 255, 255},
         },
     },
     orderSpawnOffset = -2.0, -- Distance along forwardVector to spawn NPCs (negative = behind bar)
@@ -71,6 +77,8 @@ Config.Bartender = {
     },
     orderSpawnInterval = 10, -- Time between new orders in seconds
     orderPayment = 50, -- Payment amount for correct order
+    playerOrderExpireSeconds = 60, -- Time before player orders expire (default: same as orderTimerDuration)
+    playerOrderPayment = 0, -- If > 0, take cash from ordering player; 0 = free drinks
     registerModel = `vw_prop_casino_till`, -- Model used for bartender placement/management gizmo
     defaultBlip = {
         name = "Bartending Station",

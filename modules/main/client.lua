@@ -51,6 +51,7 @@ local function SerializeClubsForNui()
             society_percentage = club.society_percentage or 0,
             jobs = club.jobs or {},
             entities = entitiesMap,
+            drink_menu = NormalizeForNui(club.drink_menu or {}),
         }
     end
     return list
@@ -148,6 +149,7 @@ RegisterNUICallback("clubManagementAction", function(payload, cb)
             coords = data.coords or defaultCoords,
             society_percentage = data.society_percentage,
             jobs = data.jobs,
+            drink_menu = type(data.drink_menu) == "table" and data.drink_menu or {},
         })
     elseif action == "updateClub" then
         TriggerServerEvent("pickle_clubs:updateClub", tonumber(data.clubId), {
@@ -156,6 +158,7 @@ RegisterNUICallback("clubManagementAction", function(payload, cb)
             coords = data.coords,
             society_percentage = data.society_percentage,
             jobs = data.jobs,
+            drink_menu = data.drink_menu,
         })
     elseif action == "deleteClub" then
         TriggerServerEvent("pickle_clubs:deleteClub", tonumber(data.clubId))

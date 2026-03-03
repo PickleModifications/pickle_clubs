@@ -3,8 +3,11 @@ import { useNuiEvent } from "../providers/nui/useNui";
 
 interface OrderDisplayData {
   orderName?: string;
+  orderId?: string;
   timeRemaining?: number;
   active: boolean;
+  isPlayerOrder?: boolean;
+  orderPlayerName?: string;
 }
 
 interface OrderDisplayMessage {
@@ -40,6 +43,11 @@ export const OrderDisplay = () => {
   return (
     <div className="fixed top-1/2 -translate-y-1/2 right-[20px] pointer-events-none z-50">
       <div className="bg-background/95 border border-border rounded-lg p-4 min-w-[250px] shadow-lg">
+        {orderData.isPlayerOrder && (
+          <div className="text-xs font-medium text-muted-foreground mb-1">
+            Player order{orderData.orderPlayerName ? ` - ${orderData.orderPlayerName}` : ""}
+          </div>
+        )}
         <div className="font-bold text-lg text-primary mb-2">
           {orderData.orderName || "Unknown Order"}
         </div>
