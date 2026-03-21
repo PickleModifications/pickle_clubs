@@ -56,15 +56,15 @@ type SocietyEntity = {
 
 type ClubEntity = BartenderEntity | BouncerEntity | ClubEntryEntity | SocietyEntity | Record<string, unknown>;
 
-type DrinkMenuItem = { name: string; price: number };
+type DrinkMenuItem = { name: string; flavors: number[]; alcohol: number; price: number; item: string };
 type DrinkMenu = Record<string, DrinkMenuItem>;
+type ClubFlavor = { label: string; color: [number, number, number]; isAlcohol?: boolean };
 
 interface ClubSummary {
   id: number;
   label: string;
   description?: string;
   coords?: Vec3;
-  society_percentage?: number;
   jobs?: ClubJob[];
   entities?: Record<string, ClubEntity>;
   drink_menu?: DrinkMenu;
@@ -72,13 +72,13 @@ interface ClubSummary {
 
 interface ClubManagementData {
   clubs?: ClubSummary[];
+  flavors?: ClubFlavor[];
 }
 
 interface ClubEditorState {
   label: string;
   description: string;
   coords: Vec3;
-  society_percentage: number;
   jobs: ClubJob[];
   drink_menu: DrinkMenu;
 }
@@ -139,7 +139,6 @@ function normalizeClubs(raw: ClubSummary[]): ClubSummary[] {
     label: club.label || `Club #${club.id}`,
     description: club.description || "",
     coords: toVec3(club.coords, DEFAULT_VEC3),
-    society_percentage: typeof club.society_percentage === "number" ? club.society_percentage : 0,
     jobs: Array.isArray(club.jobs) ? club.jobs : [],
     entities: club.entities || {},
     drink_menu: club.drink_menu && typeof club.drink_menu === "object" ? club.drink_menu : {},
@@ -148,13 +147,12 @@ function normalizeClubs(raw: ClubSummary[]): ClubSummary[] {
 
 function createClubDraft(club?: ClubSummary): ClubEditorState {
   const jobs = Array.isArray(club?.jobs) ? club.jobs : [];
-  const drink_menu =
-    club?.drink_menu && typeof club.drink_menu === "object" ? club.drink_menu : {};
+  const drink_menu: DrinkMenu =
+    club?.drink_menu && typeof club.drink_menu === "object" ? (club.drink_menu as DrinkMenu) : {};
   return {
     label: club?.label || "",
     description: club?.description || "",
     coords: toVec3(club?.coords, DEFAULT_VEC3),
-    society_percentage: typeof club?.society_percentage === "number" ? club.society_percentage : 0,
     jobs: jobs.length ? jobs : [],
     drink_menu,
   };
@@ -289,6 +287,14 @@ function ReadOnlyTransform({
   );
 }
 
+function generateDrinkId(): string {
+  return `d_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function emptyDrink(): DrinkMenuItem {
+  return { name: "", flavors: [], alcohol: 5, price: 0, item: "" };
+}
+
 export function ClubManagement() {
   const [visible, setVisible] = useState(false);
   const [hidden, setHidden] = useState(true);
@@ -297,6 +303,7 @@ export function ClubManagement() {
   const [view, setView] = useState<ViewMode>("clubsRoot");
   const [busyAction, setBusyAction] = useState(false);
   const [clubs, setClubs] = useState<ClubSummary[]>([]);
+  const [flavors, setFlavors] = useState<ClubFlavor[]>([]);
   const [selectedClubId, setSelectedClubId] = useState<number | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [creatingClub, setCreatingClub] = useState(false);
@@ -427,6 +434,7 @@ export function ClubManagement() {
   useNuiEvent("openClubManagement", (data: ClubManagementData & { clubId?: number; entityId?: string }) => {
     const nextClubs = normalizeClubs(data.clubs || []);
     setClubs(nextClubs);
+    setFlavors(Array.isArray(data.flavors) ? data.flavors : []);
     setCreatingClub(false);
     setClubDraft(createClubDraft());
     setEntityDraft(createEmptyEntityDraft());
@@ -488,7 +496,6 @@ export function ClubManagement() {
     const payload = {
       label: clubDraft.label.trim(),
       description: clubDraft.description,
-      society_percentage: Math.max(0, Math.min(100, clubDraft.society_percentage)),
       jobs: clubDraft.jobs,
       drink_menu: clubDraft.drink_menu,
     };
@@ -788,17 +795,6 @@ export function ClubManagement() {
                   placeholder="Description"
                 />
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-muted-foreground">Business (payouts use primary job as society)</div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Society %</span>
-                    <NumericInput
-                      value={clubDraft.society_percentage}
-                      onChange={(v) => setClubDraft((prev) => ({ ...prev, society_percentage: Math.max(0, Math.min(100, v)) }))}
-                      step="1"
-                    />
-                  </div>
-                </div>
-                <div className="space-y-1">
                   <div className="text-xs font-medium text-muted-foreground">Jobs with access (one primary)</div>
                   {clubDraft.jobs.length === 0 && (
                     <div className="text-xs text-muted-foreground">No jobs. Add one below.</div>
@@ -862,56 +858,148 @@ export function ClubManagement() {
                     </Button>
                   </div>
                 </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-muted-foreground">Drink menu (names and prices for ordering at the bar)</div>
-                  {Object.entries(clubDraft.drink_menu || {})
-                    .sort(([a], [b]) => {
-                      const aParts = a.split("_").map(Number);
-                      const bParts = b.split("_").map(Number);
-                      if (aParts.length !== bParts.length) return aParts.length - bParts.length;
-                      return a < b ? -1 : a > b ? 1 : 0;
-                    })
-                    .map(([key, item]) => (
-                      <div key={key} className="flex items-center gap-2 rounded border border-border bg-background px-2 py-1 text-sm">
-                        <span className="w-12 text-muted-foreground font-mono text-xs">{key}</span>
-                        <input
-                          type="text"
-                          value={item?.name ?? ""}
-                          onChange={(e) =>
-                            setClubDraft((prev) => ({
-                              ...prev,
-                              drink_menu: {
-                                ...prev.drink_menu,
-                                [key]: { ...(prev.drink_menu?.[key] ?? { name: "", price: 0 }), name: e.target.value },
-                              },
-                            }))
-                          }
-                          className="flex-1 h-8 rounded border border-border bg-background px-2 text-xs"
-                          placeholder="Drink name"
-                        />
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={typeof item?.price === "number" ? item.price : 0}
-                          onChange={(e) =>
-                            setClubDraft((prev) => ({
-                              ...prev,
-                              drink_menu: {
-                                ...prev.drink_menu,
-                                [key]: { ...(prev.drink_menu?.[key] ?? { name: "", price: 0 }), price: Math.max(0, parseInt(e.target.value, 10) || 0) },
-                              },
-                            }))
-                          }
-                          className="w-20 h-8 rounded border border-border bg-background px-2 text-xs"
-                          placeholder="Price"
-                        />
-                        <span className="text-xs text-muted-foreground">$</span>
-                      </div>
-                    ))}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-medium text-muted-foreground">Drinks</div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => {
+                        const id = generateDrinkId();
+                        setClubDraft((prev) => ({
+                          ...prev,
+                          drink_menu: { ...prev.drink_menu, [id]: emptyDrink() },
+                        }));
+                      }}
+                    >
+                      + Add Drink
+                    </Button>
+                  </div>
                   {Object.keys(clubDraft.drink_menu || {}).length === 0 && (
-                    <div className="text-xs text-muted-foreground">No drink menu entries (server sends defaults). Save club to persist overrides.</div>
+                    <div className="text-xs text-muted-foreground italic">No drinks yet — add one above.</div>
                   )}
+                  <div className="space-y-2">
+                    {Object.entries(clubDraft.drink_menu || {}).map(([key, drink]) => {
+                      const orderable = flavors.filter((f) => !f.isAlcohol);
+                      return (
+                        <div key={key} className="rounded border border-border bg-background p-2 space-y-1.5">
+                          {/* Flavor checkboxes */}
+                          <div className="flex flex-wrap gap-1">
+                            {orderable.map((f, i) => {
+                              const configIdx = flavors.indexOf(f) + 1;
+                              const checked = (drink.flavors ?? []).includes(configIdx);
+                              const [r, g, b] = f.color;
+                              return (
+                                <label
+                                  key={i}
+                                  className="flex items-center gap-1 cursor-pointer text-[10px] px-1.5 py-0.5 rounded-full font-medium select-none border"
+                                  style={{
+                                    backgroundColor: checked ? `rgba(${r},${g},${b},0.18)` : "transparent",
+                                    borderColor: `rgba(${r},${g},${b},0.4)`,
+                                    color: checked ? `rgb(${r},${g},${b})` : "var(--muted-foreground)",
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="sr-only"
+                                    checked={checked}
+                                    onChange={() => {
+                                      const next = checked
+                                        ? drink.flavors.filter((x) => x !== configIdx)
+                                        : [...(drink.flavors ?? []), configIdx].sort((a, b) => a - b);
+                                      setClubDraft((prev) => ({
+                                        ...prev,
+                                        drink_menu: { ...prev.drink_menu, [key]: { ...drink, flavors: next } },
+                                      }));
+                                    }}
+                                  />
+                                  {f.label}
+                                </label>
+                              );
+                            })}
+                          </div>
+                          {/* Name + Alc % + Price */}
+                          <div className="flex gap-1.5 items-center">
+                            <input
+                              type="text"
+                              value={drink.name}
+                              onChange={(e) =>
+                                setClubDraft((prev) => ({
+                                  ...prev,
+                                  drink_menu: { ...prev.drink_menu, [key]: { ...drink, name: e.target.value } },
+                                }))
+                              }
+                              className="flex-1 min-w-0 h-7 rounded border border-border bg-transparent px-2 text-xs"
+                              placeholder="Drink name"
+                            />
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={drink.alcohol ?? 5}
+                              onChange={(e) =>
+                                setClubDraft((prev) => ({
+                                  ...prev,
+                                  drink_menu: { ...prev.drink_menu, [key]: { ...drink, alcohol: Math.min(100, Math.max(0, parseInt(e.target.value, 10) || 0)) } },
+                                }))
+                              }
+                              className="w-14 h-7 rounded border border-border bg-transparent px-2 text-xs text-center"
+                              title="Alcohol %"
+                            />
+                            <span className="text-[10px] text-muted-foreground shrink-0">%alc</span>
+                            <span className="text-[10px] text-muted-foreground shrink-0">$</span>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              value={drink.price ?? 0}
+                              onChange={(e) =>
+                                setClubDraft((prev) => ({
+                                  ...prev,
+                                  drink_menu: { ...prev.drink_menu, [key]: { ...drink, price: Math.max(0, parseInt(e.target.value, 10) || 0) } },
+                                }))
+                              }
+                              className="w-16 h-7 rounded border border-border bg-transparent px-2 text-xs"
+                              title="Price"
+                            />
+                          </div>
+                          {/* Item name + delete */}
+                          <div className="flex gap-1.5 items-center">
+                            <input
+                              type="text"
+                              value={drink.item ?? ""}
+                              onChange={(e) =>
+                                setClubDraft((prev) => ({
+                                  ...prev,
+                                  drink_menu: { ...prev.drink_menu, [key]: { ...drink, item: e.target.value } },
+                                }))
+                              }
+                              className="flex-1 min-w-0 h-7 rounded border border-border bg-transparent px-2 text-xs font-mono"
+                              placeholder="inventory_item_name"
+                            />
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs text-destructive shrink-0"
+                              onClick={() =>
+                                setClubDraft((prev) => {
+                                  const next = { ...prev.drink_menu };
+                                  delete next[key];
+                                  return { ...prev, drink_menu: next };
+                                })
+                              }
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
                 {!creatingClub && (
                   <>

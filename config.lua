@@ -42,7 +42,6 @@ Config.FrameworkSettings = {
 Config.Bartender = {
     mixThreshold = 0.25, -- This is the minimum requirement of a secondary flavor to be considered for a mixed drink.
     -- Index of the "Alcohol" entry in flavors; this is the base (not orderable). The more poured, the stronger the drink.
-    alcoholFlavorIndex = 4,
     flavors = {
         {
             label = "Strawberry",
@@ -57,8 +56,13 @@ Config.Bartender = {
             color = {0, 0, 255},
         },
         {
+            label = "Banana",
+            color = {255, 255, 0},
+        },
+        {
             label = "Alcohol",
             color = {255, 255, 255},
+            isAlcohol = true, -- Controls drink strength; excluded from orderable flavors
         },
     },
     orderSpawnOffset = -2.0, -- Distance along forwardVector to spawn NPCs (negative = behind bar)

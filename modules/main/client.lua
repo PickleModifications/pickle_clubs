@@ -48,7 +48,6 @@ local function SerializeClubsForNui()
             label = club.label or ("Club #" .. id),
             description = club.description or "",
             coords = NormalizeForNui(club.coords),
-            society_percentage = club.society_percentage or 0,
             jobs = club.jobs or {},
             entities = entitiesMap,
             drink_menu = NormalizeForNui(club.drink_menu or {}),
@@ -147,7 +146,6 @@ RegisterNUICallback("clubManagementAction", function(payload, cb)
             label = data.label,
             description = data.description or "",
             coords = data.coords or defaultCoords,
-            society_percentage = data.society_percentage,
             jobs = data.jobs,
             drink_menu = type(data.drink_menu) == "table" and data.drink_menu or {},
         })
@@ -156,7 +154,6 @@ RegisterNUICallback("clubManagementAction", function(payload, cb)
             label = data.label,
             description = data.description or "",
             coords = data.coords,
-            society_percentage = data.society_percentage,
             jobs = data.jobs,
             drink_menu = data.drink_menu,
         })
@@ -1143,6 +1140,7 @@ function OpenClubManagementNui()
         SendNUIMessage({
             type = "openClubManagement",
             clubs = SerializeClubsForNui(),
+            flavors = Config.Bartender and Config.Bartender.flavors or {},
         })
     end)
 end
@@ -1159,6 +1157,7 @@ function OpenClubManagementNuiForEntity(clubId, entityId)
         SendNUIMessage({
             type = "openClubManagement",
             clubs = SerializeClubsForNui(),
+            flavors = Config.Bartender and Config.Bartender.flavors or {},
             clubId = clubId,
             entityId = entityId,
         })

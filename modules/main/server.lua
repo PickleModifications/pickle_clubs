@@ -54,46 +54,10 @@ local function NormalizeJobs(jobs)
     return out
 end
 
--- Build default drink menu from Config.Bartender.flavors (single + pairs), excluding alcohol base index
-local function BuildDefaultDrinkMenu()
-    local flavors = Config.Bartender and Config.Bartender.flavors or {}
-    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
-    local defaultPrice = (Config.Bartender and type(Config.Bartender.playerOrderPayment) == "number") and Config.Bartender.playerOrderPayment or 0
-    local menu = {}
-    for i = 1, #flavors do
-        if i ~= alcoholIdx then
-            menu[tostring(i)] = { name = flavors[i].label or ("Flavor " .. i), price = defaultPrice }
-        end
-    end
-    for i = 1, #flavors do
-        for j = i + 1, #flavors do
-            if i ~= alcoholIdx and j ~= alcoholIdx then
-                local key = ("%d_%d"):format(i, j)
-                menu[key] = { name = (flavors[i].label or "") .. "-" .. (flavors[j].label or ""), price = defaultPrice }
-            end
-        end
-    end
-    return menu
-end
-
--- Merge club drink_menu with defaults so every key has name/price
-local function MergeDrinkMenuWithDefaults(clubMenu)
-    local default = BuildDefaultDrinkMenu()
-    local merged = {}
-    for key, entry in pairs(default) do
-        local custom = type(clubMenu) == "table" and clubMenu[key]
-        merged[key] = {
-            name = (custom and type(custom.name) == "string" and custom.name ~= "") and custom.name or entry.name,
-            price = (custom and type(custom.price) == "number") and custom.price or entry.price,
-        }
-    end
-    return merged
-end
-
 function GetClubDrinkMenu(clubId)
     local club = Clubs[clubId]
-    if not club then return BuildDefaultDrinkMenu() end
-    return MergeDrinkMenuWithDefaults(club.drink_menu or {})
+    if not club then return {} end
+    return club.drink_menu or {}
 end
 
 local function BuildClubPacket(data)
@@ -101,7 +65,6 @@ local function BuildClubPacket(data)
         label = data.label,
         description = data.description,
         coords = data.coords,
-        society_percentage = data.society_percentage and tonumber(data.society_percentage) or 0,
         jobs = NormalizeJobs(data.jobs or {}),
         entities = data.entities or {},
         drink_menu = data.drink_menu and type(data.drink_menu) == "table" and data.drink_menu or {},
@@ -199,10 +162,9 @@ local function SyncAllClubs(target)
             label = club.label,
             description = club.description,
             coords = club.coords,
-            society_percentage = club.society_percentage,
             jobs = club.jobs,
             entities = club.entities,
-            drink_menu = GetClubDrinkMenu(id),
+            drink_menu = club.drink_menu or {},
         }
     end
     TriggerClientEvent("pickle_clubs:syncClubs", target or -1, payload)
@@ -287,12 +249,11 @@ function CreateClub(data, cb)
     local drinkMenu = type(data.drink_menu) == "table" and data.drink_menu or {}
     local drinkMenuJson = json.encode(drinkMenu)
     MySQL.Async.insert(
-        "INSERT INTO pickle_clubs (label, description, coords, society_percentage, jobs, drink_menu) VALUES (@label, @description, @coords, @society_percentage, @jobs, @drink_menu)",
+        "INSERT INTO pickle_clubs (label, description, coords, jobs, drink_menu) VALUES (@label, @description, @coords, @jobs, @drink_menu)",
         {
             ["@label"] = data.label,
             ["@description"] = data.description or "",
             ["@coords"] = json.encode(payloadCoords),
-            ["@society_percentage"] = tonumber(data.society_percentage) or 0,
             ["@jobs"] = jobsJson,
             ["@drink_menu"] = drinkMenuJson,
         },
@@ -306,7 +267,6 @@ function CreateClub(data, cb)
                 label = data.label,
                 description = data.description or "",
                 coords = data.coords,
-                society_percentage = tonumber(data.society_percentage) or 0,
                 jobs = jobs,
                 entities = {},
                 drink_menu = drinkMenu,
@@ -341,18 +301,16 @@ function UpdateClub(id, data, cb)
         label = data.label or club.label,
         description = data.description or club.description,
         coords = data.coords or club.coords,
-        society_percentage = data.society_percentage ~= nil and (tonumber(data.society_percentage) or 0) or club.society_percentage,
         jobs = jobs,
         drink_menu = drinkMenu,
     }
     MySQL.Async.execute(
-        "UPDATE pickle_clubs SET label = @label, description = @description, coords = @coords, society_percentage = @society_percentage, jobs = @jobs, drink_menu = @drink_menu WHERE id = @id",
+        "UPDATE pickle_clubs SET label = @label, description = @description, coords = @coords, jobs = @jobs, drink_menu = @drink_menu WHERE id = @id",
         {
             ["@id"] = id,
             ["@label"] = updateData.label,
             ["@description"] = updateData.description or "",
             ["@coords"] = json.encode(NormalizeForDb(updateData.coords)),
-            ["@society_percentage"] = updateData.society_percentage or 0,
             ["@jobs"] = json.encode(updateData.jobs or {}),
             ["@drink_menu"] = json.encode(updateData.drink_menu or {}),
         },
@@ -361,7 +319,6 @@ function UpdateClub(id, data, cb)
                 club.label = updateData.label
                 club.description = updateData.description
                 club.coords = updateData.coords
-                club.society_percentage = updateData.society_percentage
                 club.jobs = updateData.jobs
                 club.drink_menu = updateData.drink_menu
                 SyncAllClubs(-1)
@@ -509,7 +466,6 @@ function LoadAllClubs()
                     label = row.label,
                     description = row.description or "",
                     coords = NormalizeFromDb(coords),
-                    society_percentage = tonumber(row.society_percentage) or 0,
                     jobs = NormalizeJobs(jobsDecoded),
                     entities = {},
                     drink_menu = drinkMenu,
@@ -770,7 +726,6 @@ MySQL.ready(function()
             label VARCHAR(255) NOT NULL,
             description TEXT NULL,
             coords JSON NOT NULL,
-            society_percentage INT DEFAULT 0,
             jobs JSON NULL,
             drink_menu JSON NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

@@ -13,6 +13,14 @@ function GetRandomInt(min, max, exclude)
     end
 end
 
+function GetAlcoholFlavorIndex()
+    local flavors = Config.Bartender and Config.Bartender.flavors or {}
+    for i = 1, #flavors do
+        if flavors[i].isAlcohol then return i end
+    end
+    return 0
+end
+
 function debugPrint(...)
     if Config.Debug then
         print(...)

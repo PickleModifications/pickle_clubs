@@ -183,7 +183,7 @@ function GenerateDrinkItemName(flavorWeights)
     if not flavorWeights or next(flavorWeights) == nil then
         return nil
     end
-    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
+    local alcoholIdx = GetAlcoholFlavorIndex()
 
     -- Collect taste flavors only (exclude alcohol base)
     local flavorList = {}
@@ -806,7 +806,7 @@ function CheckDrinkOnCoaster(drinkEntity)
                 local itemName = GenerateDrinkItemName(drinkData.flavorWeights)
                 if itemName then
                     SubmittedDrinks[drinkEntity] = true
-                    local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
+                    local alcoholIdx = GetAlcoholFlavorIndex()
                     local normalizedWeights = {}
                     local flavorList = {}
                     local alcoholWeight = 0
@@ -870,7 +870,7 @@ function OpenPlayerOrderDrinkSelector(stationId)
                 title = title,
                 description = "Order this drink",
                 onSelect = function()
-                    TriggerServerEvent("pickle_clubs:placePlayerOrder", stationId, opt.drinkKey, opt.requiredFlavorIndices)
+                    TriggerServerEvent("pickle_clubs:placePlayerOrder", stationId, opt.drinkKey)
                 end,
             })
         end
@@ -1238,7 +1238,6 @@ CreateThread(function()
                 clubId = id,
                 entityId = entityId,
                 society_name = primaryJobName,
-                society_percentage = club.society_percentage or 0,
             })
         end,
         onUnrender = function(id, entityId)
@@ -1561,7 +1560,7 @@ CreateThread(function()
                 local textLines = {}
                 
                 -- Collect all flavors with their percentages (alcohol base shown as "Strength")
-                local alcoholIdx = (Config.Bartender and type(Config.Bartender.alcoholFlavorIndex) == "number") and Config.Bartender.alcoholFlavorIndex or 0
+                local alcoholIdx = GetAlcoholFlavorIndex()
                 for flavorIndex, weight in pairs(flavorWeights) do
                     if weight > 0.001 then
                         local idx = tonumber(flavorIndex)
@@ -1721,25 +1720,32 @@ local function ThrowAwayDrink(equippedDrinkRef)
 end
 
 -- Handle drink item use
-RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavorWeights)
+RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavors, alcoholPct)
     local playerPed = PlayerPedId()
-    
+
     -- Clean up any existing equipped drink
     if PlayerEquippedDrink then
         if PlayerEquippedDrink.prop and DoesEntityExist(PlayerEquippedDrink.prop) then
             DeleteEntity(PlayerEquippedDrink.prop)
         end
         ClearPedTasks(playerPed)
-        -- Notify server to remove equipped drink
         TriggerServerEvent("pickle_clubs:removeEquippedDrinkSync")
         PlayerEquippedDrink = nil
     end
-    
-    -- If flavorWeights is missing or empty, generate from item name (assumes 50/50 for mixed drinks)
-    if not flavorWeights or next(flavorWeights) == nil then
+
+    -- Build equal-weight flavorWeights from the recipe flavor indices
+    local flavorWeights = {}
+    if type(flavors) == "table" and #flavors > 0 then
+        local share = 1.0 / #flavors
+        for _, idx in ipairs(flavors) do
+            flavorWeights[idx] = share
+        end
+    end
+    -- Fallback: derive from item name if no flavors provided
+    if next(flavorWeights) == nil then
         flavorWeights = GenerateFlavorWeightsFromItemName(itemName)
     end
-    
+
     -- Calculate color from flavor weights
     local color = CalculateColorFromFlavors(flavorWeights) or {255, 255, 255}
     
@@ -1767,6 +1773,7 @@ RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavorWeights)
         color = color,
         progress = 1.0, -- Start at 100% (full drink)
         itemName = itemName,
+        alcoholPct = type(alcoholPct) == "number" and alcoholPct or 5,
         isDrinking = false,
         drinkAnimDict = "amb@world_human_drinking@beer@male@idle_a",
         drinkAnim = "idle_b",
@@ -1950,7 +1957,7 @@ RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavorWeights)
                     amountConsumed = initialProgress - (equippedDrinkRef and equippedDrinkRef.progress or 0.0)
                 end
                 if amountConsumed > 0.0 then
-                    TriggerServerEvent("pickle_clubs:drinkConsumed", amountConsumed)
+                    TriggerServerEvent("pickle_clubs:drinkConsumed", amountConsumed, equippedDrinkRef.alcoholPct or 5)
                 end
                 
                 -- Stop drinking animation and return to idle

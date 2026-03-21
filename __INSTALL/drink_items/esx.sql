@@ -4,6 +4,15 @@
 INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('strawberry_drink', 'Strawberry Drink', 200, 0, 1);
 INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('lime_drink', 'Lime Drink', 200, 0, 1);
 INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('blueberry_drink', 'Blueberry Drink', 200, 0, 1);
+INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('banana_drink', 'Banana Drink', 200, 0, 1);
 INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('lime_strawberry_bar_drink', 'Strawberry-Lime Bar Drink', 200, 0, 1);
 INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('blueberry_strawberry_bar_drink', 'Strawberry-Blueberry Bar Drink', 200, 0, 1);
+INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('banana_strawberry_bar_drink', 'Strawberry-Banana Bar Drink', 200, 0, 1);
 INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('blueberry_lime_bar_drink', 'Lime-Blueberry Bar Drink', 200, 0, 1);
+INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('banana_lime_bar_drink', 'Lime-Banana Bar Drink', 200, 0, 1);
+INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('banana_blueberry_bar_drink', 'Blueberry-Banana Bar Drink', 200, 0, 1);
+INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('blueberry_lime_strawberry_bar_drink', 'Strawberry-Lime-Blueberry Bar Drink', 200, 0, 1);
+INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('banana_lime_strawberry_bar_drink', 'Strawberry-Lime-Banana Bar Drink', 200, 0, 1);
+INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('banana_blueberry_strawberry_bar_drink', 'Strawberry-Blueberry-Banana Bar Drink', 200, 0, 1);
+INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('banana_blueberry_lime_bar_drink', 'Lime-Blueberry-Banana Bar Drink', 200, 0, 1);
+INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('banana_blueberry_lime_strawberry_bar_drink', 'Strawberry-Lime-Blueberry-Banana Bar Drink', 200, 0, 1);

@@ -37,6 +37,18 @@
     ['combinable'] = nil,
     ['description'] = 'Blueberry Drink from the bar.'
 },
+['banana_drink'] = {
+    ['name'] = 'banana_drink',
+    ['label'] = 'Banana Drink',
+    ['weight'] = 200,
+    ['type'] = 'item',
+    ['image'] = 'drink.png',
+    ['unique'] = false,
+    ['useable'] = true,
+    ['shouldClose'] = true,
+    ['combinable'] = nil,
+    ['description'] = 'Banana Drink from the bar.'
+},
 ['lime_strawberry_bar_drink'] = {
     ['name'] = 'lime_strawberry_bar_drink',
     ['label'] = 'Strawberry-Lime Bar Drink',
@@ -61,6 +73,18 @@
     ['combinable'] = nil,
     ['description'] = 'Strawberry-Blueberry Bar Drink from the bar.'
 },
+['banana_strawberry_bar_drink'] = {
+    ['name'] = 'banana_strawberry_bar_drink',
+    ['label'] = 'Strawberry-Banana Bar Drink',
+    ['weight'] = 200,
+    ['type'] = 'item',
+    ['image'] = 'drink.png',
+    ['unique'] = false,
+    ['useable'] = true,
+    ['shouldClose'] = true,
+    ['combinable'] = nil,
+    ['description'] = 'Strawberry-Banana Bar Drink from the bar.'
+},
 ['blueberry_lime_bar_drink'] = {
     ['name'] = 'blueberry_lime_bar_drink',
     ['label'] = 'Lime-Blueberry Bar Drink',
@@ -72,4 +96,88 @@
     ['shouldClose'] = true,
     ['combinable'] = nil,
     ['description'] = 'Lime-Blueberry Bar Drink from the bar.'
+},
+['banana_lime_bar_drink'] = {
+    ['name'] = 'banana_lime_bar_drink',
+    ['label'] = 'Lime-Banana Bar Drink',
+    ['weight'] = 200,
+    ['type'] = 'item',
+    ['image'] = 'drink.png',
+    ['unique'] = false,
+    ['useable'] = true,
+    ['shouldClose'] = true,
+    ['combinable'] = nil,
+    ['description'] = 'Lime-Banana Bar Drink from the bar.'
+},
+['banana_blueberry_bar_drink'] = {
+    ['name'] = 'banana_blueberry_bar_drink',
+    ['label'] = 'Blueberry-Banana Bar Drink',
+    ['weight'] = 200,
+    ['type'] = 'item',
+    ['image'] = 'drink.png',
+    ['unique'] = false,
+    ['useable'] = true,
+    ['shouldClose'] = true,
+    ['combinable'] = nil,
+    ['description'] = 'Blueberry-Banana Bar Drink from the bar.'
+},
+['blueberry_lime_strawberry_bar_drink'] = {
+    ['name'] = 'blueberry_lime_strawberry_bar_drink',
+    ['label'] = 'Strawberry-Lime-Blueberry Bar Drink',
+    ['weight'] = 200,
+    ['type'] = 'item',
+    ['image'] = 'drink.png',
+    ['unique'] = false,
+    ['useable'] = true,
+    ['shouldClose'] = true,
+    ['combinable'] = nil,
+    ['description'] = 'Strawberry-Lime-Blueberry Bar Drink from the bar.'
+},
+['banana_lime_strawberry_bar_drink'] = {
+    ['name'] = 'banana_lime_strawberry_bar_drink',
+    ['label'] = 'Strawberry-Lime-Banana Bar Drink',
+    ['weight'] = 200,
+    ['type'] = 'item',
+    ['image'] = 'drink.png',
+    ['unique'] = false,
+    ['useable'] = true,
+    ['shouldClose'] = true,
+    ['combinable'] = nil,
+    ['description'] = 'Strawberry-Lime-Banana Bar Drink from the bar.'
+},
+['banana_blueberry_strawberry_bar_drink'] = {
+    ['name'] = 'banana_blueberry_strawberry_bar_drink',
+    ['label'] = 'Strawberry-Blueberry-Banana Bar Drink',
+    ['weight'] = 200,
+    ['type'] = 'item',
+    ['image'] = 'drink.png',
+    ['unique'] = false,
+    ['useable'] = true,
+    ['shouldClose'] = true,
+    ['combinable'] = nil,
+    ['description'] = 'Strawberry-Blueberry-Banana Bar Drink from the bar.'
+},
+['banana_blueberry_lime_bar_drink'] = {
+    ['name'] = 'banana_blueberry_lime_bar_drink',
+    ['label'] = 'Lime-Blueberry-Banana Bar Drink',
+    ['weight'] = 200,
+    ['type'] = 'item',
+    ['image'] = 'drink.png',
+    ['unique'] = false,
+    ['useable'] = true,
+    ['shouldClose'] = true,
+    ['combinable'] = nil,
+    ['description'] = 'Lime-Blueberry-Banana Bar Drink from the bar.'
+},
+['banana_blueberry_lime_strawberry_bar_drink'] = {
+    ['name'] = 'banana_blueberry_lime_strawberry_bar_drink',
+    ['label'] = 'Strawberry-Lime-Blueberry-Banana Bar Drink',
+    ['weight'] = 200,
+    ['type'] = 'item',
+    ['image'] = 'drink.png',
+    ['unique'] = false,
+    ['useable'] = true,
+    ['shouldClose'] = true,
+    ['combinable'] = nil,
+    ['description'] = 'Strawberry-Lime-Blueberry-Banana Bar Drink from the bar.'
 },
