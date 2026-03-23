@@ -6,7 +6,7 @@ export default defineConfig({
   base: '/nui',
   build: {
     outDir: '../nui',
-    emptyOutDir: true, // also necessary
+    emptyOutDir: false,
   },
   plugins: [react()],
   resolve: {

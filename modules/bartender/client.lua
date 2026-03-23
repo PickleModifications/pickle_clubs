@@ -7,6 +7,50 @@ LoadedStations = {} -- stationId -> station data
 StationInteractions = {} -- stationId -> interactionIndex
 StationRegisterProps = {} -- stationId -> register prop entity (visible for all clients)
 
+-- Drink menu for current station (fetched on station start)
+CurrentStationMenu = nil -- array of { drinkKey, name, flavors, alcoholPct, item }
+
+-- Match flavorWeights against the current station menu; returns the menu entry name or nil
+function MatchDrinkToMenuName(flavorWeights)
+    if not CurrentStationMenu or not flavorWeights then return nil end
+    local alcoholKey = Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.key or "_alcohol"
+    local alcoholWeight = flavorWeights[alcoholKey] or 0
+    local submittedAlcoholPct = math.floor(alcoholWeight * 100 + 0.5)
+    local tolerance = Config.Bartender.alcoholTolerance or 10
+
+    local tasteWeight = 0
+    local submittedTaste = {}
+    for key, weight in pairs(flavorWeights) do
+        if key ~= alcoholKey and weight > 0.01 then
+            submittedTaste[key] = weight
+            tasteWeight = tasteWeight + weight
+        end
+    end
+    if tasteWeight < 0.3 then return nil end
+
+    for _, entry in ipairs(CurrentStationMenu) do
+        if entry.flavors and #entry.flavors > 0 then
+            local entryAlcohol = entry.alcoholPct or 0
+            if math.abs(submittedAlcoholPct - entryAlcohol) <= tolerance then
+                local allPresent = true
+                local requiredWeight = 0
+                for _, flavorKey in ipairs(entry.flavors) do
+                    local w = submittedTaste[flavorKey] or 0
+                    if w < 0.01 then allPresent = false; break end
+                    requiredWeight = requiredWeight + w
+                end
+                if allPresent then
+                    local threshold = #entry.flavors == 1 and 0.85 or 0.70
+                    if (requiredWeight / tasteWeight) >= threshold then
+                        return entry.name
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
 -- Equipped drinks system
 EquippedDrinks = {} -- playerId -> {prop, flavorWeights, color, progress, thread}
 PlayerEquippedDrink = nil -- Current player's equipped drink data
@@ -65,29 +109,30 @@ function CalculatePourRate(pitch)
 end
 
 -- Calculate the final color from ALL flavor weights in the drink
--- flavorWeights format: {1 = 0.01, 2 = 0.02, 3 = 0.03} where keys are flavor indexes
+-- flavorWeights format: {strawberry = 0.3, lime = 0.7} where keys are flavor string keys
 function CalculateColorFromFlavors(flavorWeights)
     if not flavorWeights or next(flavorWeights) == nil then
         return nil -- No flavors = no color
     end
-    
+
     local totalWeight = 0
     local totalR, totalG, totalB = 0, 0, 0
-    
-    -- Iterate through ALL flavor indexes that have been poured into the drink
-    -- Calculate weighted average of ALL flavors based on their proportions
-    for flavorIndex, weight in pairs(flavorWeights) do
-        -- Ensure flavorIndex is a number (handle both string and numeric keys)
-        local flavorNum = tonumber(flavorIndex)
-        if flavorNum then
-            local flavor = Config.Bartender.flavors[flavorNum]
-            if flavor and flavor.color then
-                -- Add this flavor's contribution to the total color
-                totalWeight = totalWeight + weight
-                totalR = totalR + flavor.color[1] * weight
-                totalG = totalG + flavor.color[2] * weight
-                totalB = totalB + flavor.color[3] * weight
-            end
+
+    local alcoholKey = Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.key or "_alcohol"
+    local alcoholColor = Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.color or {255, 255, 255}
+    for flavorKey, weight in pairs(flavorWeights) do
+        local color
+        if flavorKey == alcoholKey then
+            color = alcoholColor
+        else
+            local flavor = Config.Bartender.flavors[flavorKey]
+            color = flavor and flavor.color
+        end
+        if color then
+            totalWeight = totalWeight + weight
+            totalR = totalR + color[1] * weight
+            totalG = totalG + color[2] * weight
+            totalB = totalB + color[3] * weight
         end
     end
     
@@ -117,65 +162,6 @@ function CalculateColorFromFlavors(flavorWeights)
     return {r, g, b}
 end
 
--- Generate flavorWeights from item name (for when metadata is missing)
--- Assumes 50/50 mix for mixed drinks
-function GenerateFlavorWeightsFromItemName(itemName)
-    if not itemName then return {} end
-    
-    -- Check if it's a mixed drink (contains _bar_drink)
-    if string.match(itemName, "_bar_drink$") then
-        -- Extract the two flavor names
-        local flavorPart = string.gsub(itemName, "_bar_drink$", "")
-        local flavors = {}
-        for flavorName in string.gmatch(flavorPart, "([^_]+)") do
-            table.insert(flavors, flavorName)
-        end
-        
-        if #flavors == 2 then
-            -- Find flavor indices (ensure we get both flavors)
-            local flavorWeights = {}
-            local foundCount = 0
-            for i = 1, #Config.Bartender.flavors do
-                local flavor = Config.Bartender.flavors[i]
-                if flavor then
-                    local flavorName = string.lower(flavor.label)
-                    flavorName = string.gsub(flavorName, "%s+", "_")
-                    flavorName = string.gsub(flavorName, "[^%w_]", "")
-                    
-                    if flavorName == flavors[1] or flavorName == flavors[2] then
-                        flavorWeights[i] = 0.5 -- 50/50 mix
-                        foundCount = foundCount + 1
-                    end
-                end
-            end
-            
-            -- Only return if we found both flavors
-            if foundCount == 2 then
-                return flavorWeights
-            end
-        end
-    elseif string.match(itemName, "_drink$") then
-        -- Single flavor drink
-        local flavorPart = string.gsub(itemName, "_drink$", "")
-        
-        -- Find matching flavor
-        for i = 1, #Config.Bartender.flavors do
-            local flavor = Config.Bartender.flavors[i]
-            if flavor then
-                local flavorName = string.lower(flavor.label)
-                flavorName = string.gsub(flavorName, "%s+", "_")
-                flavorName = string.gsub(flavorName, "[^%w_]", "")
-                
-                if flavorName == flavorPart then
-                    return {[i] = 1.0} -- 100% single flavor
-                end
-            end
-        end
-    end
-    
-    return {}
-end
-
 -- Generate item name from flavorWeights (taste flavors only; alcohol base is excluded from name)
 -- Single flavor: {flavor_name}_drink
 -- Mixed drinks: Sort top 2 flavors alphabetically -> {flavor1}_{flavor2}_bar_drink
@@ -183,14 +169,11 @@ function GenerateDrinkItemName(flavorWeights)
     if not flavorWeights or next(flavorWeights) == nil then
         return nil
     end
-    local alcoholIdx = GetAlcoholFlavorIndex()
-
-    -- Collect taste flavors only (exclude alcohol base)
+    -- Collect taste flavors only
     local flavorList = {}
-    for flavorIndex, weight in pairs(flavorWeights) do
-        local idx = tonumber(flavorIndex)
-        if idx and idx ~= alcoholIdx and weight > 0.001 then
-            local flavor = Config.Bartender.flavors[idx]
+    for flavorKey, weight in pairs(flavorWeights) do
+        if weight > 0.001 then
+            local flavor = Config.Bartender.flavors[flavorKey]
             if flavor then
                 local flavorName = string.lower(flavor.label)
                 flavorName = string.gsub(flavorName, "%s+", "_")
@@ -198,7 +181,6 @@ function GenerateDrinkItemName(flavorWeights)
                 table.insert(flavorList, {
                     name = flavorName,
                     weight = weight,
-                    index = idx
                 })
             end
         end
@@ -453,12 +435,7 @@ function SpawnOrderNPC(orderData)
         OrderNPCs[stationId] = {}
     end
     
-    -- Use server-provided model only (so all clients spawn the same ped)
-    local modelName = (type(orderData.npcModel) == "string" and orderData.npcModel ~= "") and orderData.npcModel or "a_m_m_skater_01"
-    local modelHash = GetHashKey(modelName)
-    if not IsModelInCdimage(modelHash) then
-        modelHash = `a_m_m_skater_01`
-    end
+    local modelHash = GetHashKey(orderData.npcModel)
     
     RequestModel(modelHash)
     while not HasModelLoaded(modelHash) do
@@ -713,9 +690,32 @@ RegisterNetEvent("pickle_clubs:updateOrder", function(orderData)
         CurrentOrders[orderData.stationId] = orderData
         -- Send to NUI only if this is the current station
         if CURRENT_INTERACTION and CURRENT_INTERACTION.stationId == orderData.stationId then
+            -- Resolve flavor keys to labels/colors for the NUI
+            local flavorDetails = {}
+            if orderData.flavors then
+                for _, key in ipairs(orderData.flavors) do
+                    local f = Config.Bartender.flavors[key]
+                    flavorDetails[#flavorDetails + 1] = {
+                        key   = key,
+                        label = f and f.label or key,
+                        color = f and f.color or {128, 128, 128},
+                    }
+                end
+            end
             SendNUIMessage({
                 type = "updateOrderDisplay",
-                data = orderData
+                data = {
+                    stationId       = orderData.stationId,
+                    orderId         = orderData.orderId,
+                    orderName       = orderData.orderName,
+                    flavors         = orderData.flavors,
+                    flavorDetails   = flavorDetails,
+                    alcoholPct      = orderData.alcoholPct,
+                    timeRemaining   = orderData.timeRemaining,
+                    active          = orderData.active,
+                    isPlayerOrder   = orderData.isPlayerOrder,
+                    orderPlayerName = orderData.orderPlayerName,
+                }
             })
         end
     end
@@ -801,43 +801,15 @@ function CheckDrinkOnCoaster(drinkEntity)
                 end)
             end
         else
-            -- No active order - give player a useable item for the drink
+            -- No active order - match drink against menu and give the corresponding item
             if drinkData.flavorWeights and not SubmittedDrinks[drinkEntity] then
-                local itemName = GenerateDrinkItemName(drinkData.flavorWeights)
-                if itemName then
-                    SubmittedDrinks[drinkEntity] = true
-                    local alcoholIdx = GetAlcoholFlavorIndex()
-                    local normalizedWeights = {}
-                    local flavorList = {}
-                    local alcoholWeight = 0
-                    for flavorIndex, weight in pairs(drinkData.flavorWeights) do
-                        local idx = tonumber(flavorIndex)
-                        if idx and weight > 0.001 then
-                            if idx == alcoholIdx then
-                                alcoholWeight = weight
-                            else
-                                table.insert(flavorList, { index = idx, weight = weight })
-                            end
-                        end
-                    end
-                    table.sort(flavorList, function(a, b) return a.weight > b.weight end)
-                    if #flavorList >= 2 and flavorList[1].weight < (1.0 - Config.Bartender.mixThreshold) then
-                        normalizedWeights[flavorList[1].index] = 0.5
-                        normalizedWeights[flavorList[2].index] = 0.5
-                    elseif #flavorList >= 1 then
-                        normalizedWeights[flavorList[1].index] = 1.0
-                    end
-                    if alcoholWeight > 0.001 then
-                        normalizedWeights[alcoholIdx] = math.min(1.0, alcoholWeight)
-                    end
-                    TriggerServerEvent("pickle_clubs:giveDrinkItem", itemName, normalizedWeights)
-                    -- Clear the drink after giving item
-                    INT_ENTITIES[drinkEntity].progress = 0.0
-                    INT_ENTITIES[drinkEntity].flavorWeights = {}
-                    SetTimeout(1000, function() 
-                        SubmittedDrinks[drinkEntity] = nil
-                    end)
-                end
+                SubmittedDrinks[drinkEntity] = true
+                TriggerServerEvent("pickle_clubs:giveDrinkItem", stationId, drinkData.flavorWeights)
+                INT_ENTITIES[drinkEntity].progress = 0.0
+                INT_ENTITIES[drinkEntity].flavorWeights = {}
+                SetTimeout(1000, function()
+                    SubmittedDrinks[drinkEntity] = nil
+                end)
             end
         end
     end
@@ -1076,7 +1048,11 @@ function StartStationInteraction(data)
             DeleteEntity(StationRegisterProps[stationId])
             StationRegisterProps[stationId] = nil
         end
-        CreateStationInteraction(station)
+        -- Fetch drink menu for matching drink names
+        lib.callback("pickle_clubs:getClubDrinkMenu", false, function(drinkMenu)
+            CurrentStationMenu = drinkMenu or {}
+            CreateStationInteraction(station)
+        end, stationId)
     end, stationId, "interaction")
 end
 
@@ -1141,11 +1117,22 @@ function CreateStationInteraction(station)
     })
     
     -- Create bottles for each flavor
-    for i=1, #Config.Bartender.flavors do
-        local flavor = Config.Bartender.flavors[i]
-        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * (0.85)) + (interaction.rightVector * (-0.1 * i)), heading, {
+    local bottleOffset = 0
+    for key, flavor in pairs(Config.Bartender.flavors) do
+        bottleOffset = bottleOffset + 1
+        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * (0.85)) + (interaction.rightVector * (-0.1 * bottleOffset)), heading, {
             color = flavor.color,
-            flavorIndex = i, -- Store the flavor index
+            flavorKey = key,
+            progress = 1.0,
+        })
+    end
+
+    -- Create alcohol bottle
+    if Config.Bartender.alcoholBottle then
+        bottleOffset = bottleOffset + 1
+        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * (0.85)) + (interaction.rightVector * (-0.1 * bottleOffset)), heading, {
+            color = Config.Bartender.alcoholBottle.color,
+            flavorKey = Config.Bartender.alcoholBottle.key,
             progress = 1.0,
         })
     end
@@ -1380,9 +1367,9 @@ CreateThread(function()
             SetEntityCollision(bottle, true, true)
             SetEntityHeading(bottle, heading)
             return bottle, {
-                color = params.color or {255, 255, 255},
-                flavorIndex = params.flavorIndex, -- Index in Config.Bartender.flavors
-                progress = params.progress or 0.0,
+                color = params.color,
+                flavorKey = params.flavorKey,
+                progress = params.progress,
                 heightOffset = 0.25,
             }
         end,
@@ -1397,8 +1384,8 @@ CreateThread(function()
             local forwardVector, rightVector, upVector, position = GetEntityMatrix(entity)
             local renderCoords = position + (upVector * surfaceHeight)
             local surfaceCoords = renderCoords + (upVector * height)
-            local color = INT_ENTITIES[entity].color or {255, 255, 255}
-            if INT_ENTITIES[entity].progress > 0.0 then
+            local color = INT_ENTITIES[entity].color
+            if color and INT_ENTITIES[entity].progress > 0.0 then
                 DrawMarker(1, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 90.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(28, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(1, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
@@ -1467,13 +1454,18 @@ CreateThread(function()
                         -- Calculate pour rate based on pitch (how much the bottle is tilted)
                         local pourRate = CalculatePourRate(pitch)
                         local basePourAmount = 0.015 -- Maximum pour amount
+                        -- Alcohol pours at quarter speed
+                        local alcoholKey = Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.key or "_alcohol"
+                        if currentEntity.flavorKey == alcoholKey then
+                            basePourAmount = basePourAmount * 0.05
+                        end
                         local pourAmount = basePourAmount * pourRate
-                        childEntity.progress = childEntity.progress + pourAmount
+                        childEntity.progress = math.min(childEntity.progress + pourAmount, 1.0)
                         INT_ENTITIES[closestChild.entity].progress = childEntity.progress
                         
                         -- Add flavor weight based on what's being poured
-                        local bottleFlavorIndex = currentEntity.flavorIndex
-                        if bottleFlavorIndex then
+                        local bottleFlavorKey = currentEntity.flavorKey
+                        if bottleFlavorKey then
                             -- Initialize flavorWeights if it doesn't exist
                             if not childEntity.flavorWeights then
                                 childEntity.flavorWeights = {}
@@ -1490,10 +1482,11 @@ CreateThread(function()
                             end
                             
                             -- Add the new flavor proportion
-                            if not childEntity.flavorWeights[bottleFlavorIndex] then
-                                childEntity.flavorWeights[bottleFlavorIndex] = 0
+                            local fw = childEntity.flavorWeights
+                            if fw then
+                                fw[bottleFlavorKey] = (fw[bottleFlavorKey] or 0) + flavorProportion
+                                childEntity.flavorWeights = fw
                             end
-                            childEntity.flavorWeights[bottleFlavorIndex] = childEntity.flavorWeights[bottleFlavorIndex] + flavorProportion
                             
                             -- Update the entity data
                             INT_ENTITIES[closestChild.entity].flavorWeights = childEntity.flavorWeights
@@ -1526,8 +1519,8 @@ CreateThread(function()
             SetEntityCollision(drink, true, true)
             SetEntityHeading(drink, heading)
             return drink, {
-                progress = params.progress or 0.0,
-                flavorWeights = params.flavorWeights or {}, -- Track proportion of each flavor: {1 = 0.01, 2 = 0.02, ...}
+                progress = params.progress,
+                flavorWeights = params.flavorWeights,
                 heightOffset = 0.25,
             }
         end,
@@ -1543,9 +1536,8 @@ CreateThread(function()
             local renderCoords = position + (upVector * surfaceHeight)
             local surfaceCoords = renderCoords + (upVector * height)
             -- Calculate color from flavor weights
-            local calculatedColor = CalculateColorFromFlavors(INT_ENTITIES[entity].flavorWeights)
-            local color = calculatedColor or {255, 255, 255}
-            if INT_ENTITIES[entity].progress > 0.0 then
+            local color = CalculateColorFromFlavors(INT_ENTITIES[entity].flavorWeights)
+            if color and INT_ENTITIES[entity].progress > 0.0 then
                 DrawMarker(1, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 90.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(28, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(1, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
@@ -1553,46 +1545,34 @@ CreateThread(function()
             end
             
             -- Draw flavor percentages above the drink
-            local secondaryTitle = math.floor(INT_ENTITIES[entity].progress * 100) .. "%"
+            local secondaryTitle = math.floor(INT_ENTITIES[entity].progress * 100 + 0.5) .. "%"
             local flavorWeights = INT_ENTITIES[entity].flavorWeights
             if flavorWeights and next(flavorWeights) ~= nil then
                 local textY = position.z + 0.15 -- Start above the drink
                 local textLines = {}
                 
-                -- Collect all flavors with their percentages (alcohol base shown as "Strength")
-                local alcoholIdx = GetAlcoholFlavorIndex()
-                for flavorIndex, weight in pairs(flavorWeights) do
+                -- Percentages are absolute: weight * progress = how much of the full glass this ingredient fills
+                local alcoholKey = Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.key or "_alcohol"
+                local alcoholLabel = Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.label or "Alcohol"
+                local progress = INT_ENTITIES[entity].progress
+
+                for flavorKey, weight in pairs(flavorWeights) do
                     if weight > 0.001 then
-                        local idx = tonumber(flavorIndex)
-                        local flavor = idx and Config.Bartender.flavors[idx]
-                        local percentage = math.floor(weight * 100 + 0.5)
-                        local label
-                        if idx == alcoholIdx then
-                            label = "Strength"
-                        elseif flavor then
-                            label = flavor.label or (_L("bartender_flavor_prefix") .. flavorIndex)
+                        local absolute = math.floor(weight * progress * 100)
+                        if flavorKey == alcoholKey then
+                            table.insert(textLines, {type = "progress", label = alcoholLabel, value = absolute, isAlcohol = true})
                         else
-                            label = _L("bartender_flavor_prefix") .. flavorIndex
+                            local flavor = Config.Bartender.flavors[flavorKey]
+                            local label = flavor and flavor.label or (_L("bartender_flavor_prefix") .. flavorKey)
+                            table.insert(textLines, {type = "progress", label = label, value = absolute})
                         end
-                        table.insert(textLines, {type = "progress", label = label, value = percentage})
                     end
                 end
-                
-                -- Sort by weight (descending)
+
+                -- Sort by value (descending)
                 table.sort(textLines, function(a, b) return a.value > b.value end)
-                -- Title uses taste flavors only (exclude Strength/alcohol base)
-                local tasteLines = {}
-                for _, row in ipairs(textLines) do
-                    if row.label ~= "Strength" then tasteLines[#tasteLines + 1] = row end
-                end
-                local title = ""
-                if #tasteLines >= 1 then
-                    if #tasteLines == 1 or (tasteLines[1].value / 100) >= (1.0 - Config.Bartender.mixThreshold) then
-                        title = tasteLines[1].label
-                    else
-                        title = tasteLines[1].label .. "-" .. tasteLines[2].label
-                    end
-                end
+                -- Match against menu for title; fall back to generic if no match
+                local title = MatchDrinkToMenuName(flavorWeights) or _L("bartender_drink")
                 if INT_ENTITIES[entity].progress >= 1.0 then 
                     table.insert(textLines, {type = "text", label = _L("bartender_place_drink_coaster"), center = true })
                     
@@ -1600,7 +1580,7 @@ CreateThread(function()
                     CheckDrinkOnCoaster(entity)
                 end
                 UpdateInteractiveEntityDisplay(entity, {
-                    title = title .. _L("bartender_drink_suffix"),
+                    title = title,
                     secondaryTitle = secondaryTitle,
                     rows = textLines
                 })
@@ -1741,13 +1721,8 @@ RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavors, alcoho
             flavorWeights[idx] = share
         end
     end
-    -- Fallback: derive from item name if no flavors provided
-    if next(flavorWeights) == nil then
-        flavorWeights = GenerateFlavorWeightsFromItemName(itemName)
-    end
-
     -- Calculate color from flavor weights
-    local color = CalculateColorFromFlavors(flavorWeights) or {255, 255, 255}
+    local color = CalculateColorFromFlavors(flavorWeights)
     
     -- Create drink prop
     local drinkProp = CreateProp(`prop_tall_glass`, 0.0, 0.0, 0.0, false, false, false)
@@ -1769,11 +1744,11 @@ RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavors, alcoho
     -- Store equipped drink data
     PlayerEquippedDrink = {
         prop = drinkProp,
-        flavorWeights = flavorWeights or {},
+        flavorWeights = flavorWeights,
         color = color,
         progress = 1.0, -- Start at 100% (full drink)
         itemName = itemName,
-        alcoholPct = type(alcoholPct) == "number" and alcoholPct or 5,
+        alcoholPct = alcoholPct,
         isDrinking = false,
         drinkAnimDict = "amb@world_human_drinking@beer@male@idle_a",
         drinkAnim = "idle_b",
@@ -1815,12 +1790,14 @@ RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavors, alcoho
                 local renderCoords = position + (upVector * surfaceHeight)
                 local surfaceCoords = renderCoords + (upVector * height)
                 local drinkColor = equippedDrinkRef.color
-                
+
                 -- Draw drink markers (same as entityThread for drinks)
-                DrawMarker(1, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 90.0, -ry, rz, radius, radius, height, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
-                DrawMarker(28, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
-                DrawMarker(1, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius, radius, height, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
-                DrawMarker(28, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2)
+                if drinkColor then
+                    DrawMarker(1, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 90.0, -ry, rz, radius, radius, height, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2, false, nil, nil, false)
+                    DrawMarker(28, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2, false, nil, nil, false)
+                    DrawMarker(1, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius, radius, height, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2, false, nil, nil, false)
+                    DrawMarker(28, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, drinkColor[1], drinkColor[2], drinkColor[3], alpha, false, false, 2, false, nil, nil, false)
+                end
             end
             Wait(0)
         end
@@ -1954,10 +1931,10 @@ RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavors, alcoho
                 
                 -- Amount consumed this sip (for scaled alcohol): only set if we didn't throw (throw branch already set amountConsumed)
                 if not shouldThrowAway then
-                    amountConsumed = initialProgress - (equippedDrinkRef and equippedDrinkRef.progress or 0.0)
+                    amountConsumed = initialProgress - equippedDrinkRef.progress
                 end
                 if amountConsumed > 0.0 then
-                    TriggerServerEvent("pickle_clubs:drinkConsumed", amountConsumed, equippedDrinkRef.alcoholPct or 5)
+                    TriggerServerEvent("pickle_clubs:drinkConsumed", amountConsumed, equippedDrinkRef.alcoholPct)
                 end
                 
                 -- Stop drinking animation and return to idle
@@ -1998,9 +1975,9 @@ RegisterNetEvent("pickle_clubs:syncEquippedDrinkUpdate", function(playerId, coor
     -- Update or create equipped drink entry
     EquippedDrinks[playerId] = {
         coords = coords,
-        flavorWeights = flavorWeights or {},
-        color = color or {255, 255, 255},
-        progress = progress or 1.0,
+        flavorWeights = flavorWeights,
+        color = color,
+        progress = progress,
         lastUpdate = GetGameTimer()
     }
 end)
@@ -2070,7 +2047,7 @@ CreateThread(function()
                                 local maxHeight = 0.1875
                                 local surfaceHeight = 0.01
                                 local alpha = 128
-                                local drinkProgress = drinkData.progress or 1.0
+                                local drinkProgress = drinkData.progress
                                 local height = drinkProgress * maxHeight
                                 local drinkColor = drinkData.color
                                 

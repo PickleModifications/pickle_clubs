@@ -254,22 +254,20 @@ function GenerateDrinkOrder(stationId)
     end
     if #entries == 0 then return nil end
     local chosen = entries[math.random(1, #entries)].entry
-    return chosen.name, chosen.flavors,
-        (type(chosen.alcohol) == "number" and chosen.alcohol or 5),
-        (type(chosen.item) == "string" and chosen.item or "")
+    return chosen.name, chosen.flavors, chosen.alcohol, chosen.item
 end
 
 function CreateOrder(stationId)
     local orderId = GetGameTimer() .. "_" .. math.random(1000, 9999)
-    local drinkName, requiredFlavorIndices, alcoholPct, item = GenerateDrinkOrder(stationId)
+    local drinkName, requiredFlavorKeys, alcoholPct, item = GenerateDrinkOrder(stationId)
     if not drinkName then return nil end
     return {
         id = orderId,
         drinkName = drinkName,
-        requiredFlavorIndices = requiredFlavorIndices,
+        requiredFlavorKeys = requiredFlavorKeys,
         alcoholPct = alcoholPct,
         item = item,
-        flavors = requiredFlavorIndices,
+        flavors = requiredFlavorKeys,
         timer = Config.Bartender.orderTimerDuration,
         createdAt = GetGameTimer(),
         stationId = nil,
@@ -347,6 +345,8 @@ function UpdateCurrentOrderDisplay(stationId)
             stationId = stationId,
             orderId = currentOrder.id,
             orderName = currentOrder.drinkName,
+            flavors = currentOrder.requiredFlavorKeys,
+            alcoholPct = currentOrder.alcoholPct,
             timeRemaining = currentOrder.timer,
             active = true,
             isPlayerOrder = currentOrder.isPlayerOrder == true,
@@ -521,27 +521,42 @@ function ValidateDrink(stationId, orderId, flavorWeights)
     end
     if not order then return false, "Order not found" end
 
-    local requiredFlavors = order.requiredFlavorIndices
+    local requiredFlavors = order.requiredFlavorKeys
     if not requiredFlavors or #requiredFlavors == 0 then
         return false, "Invalid order requirements"
     end
 
-    local totalWeight = 0
-    for _, weight in pairs(flavorWeights) do
-        totalWeight = totalWeight + weight
+    -- Separate alcohol weight from taste flavor weights
+    local alcoholKey = (Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.key) or "_alcohol"
+    local alcoholWeight = flavorWeights[alcoholKey] or 0
+    local submittedAlcoholPct = math.floor(alcoholWeight * 100 + 0.5)
+
+    -- Validate alcohol content against order requirement
+    local requiredAlcoholPct = order.alcoholPct or 0
+    local tolerance = Config.Bartender.alcoholTolerance or 10
+    if math.abs(submittedAlcoholPct - requiredAlcoholPct) > tolerance then
+        return false, "Wrong alcohol strength"
     end
-    if totalWeight < 0.5 then return false, "Drink not full enough" end
+
+    -- Validate taste flavors (excluding alcohol from totals)
+    local tasteWeight = 0
+    for key, weight in pairs(flavorWeights) do
+        if key ~= alcoholKey then
+            tasteWeight = tasteWeight + weight
+        end
+    end
+    if tasteWeight < 0.3 then return false, "Drink not full enough" end
 
     local requiredWeight = 0
     for i = 1, #requiredFlavors do
-        local flavorIndex = requiredFlavors[i]
-        local weight = flavorWeights[tonumber(flavorIndex)] or flavorWeights[flavorIndex] or 0
+        local flavorKey = requiredFlavors[i]
+        local weight = flavorWeights[flavorKey] or 0
         if weight < 0.01 then return false, "Missing required flavor" end
         requiredWeight = requiredWeight + weight
     end
 
     local threshold = #requiredFlavors == 1 and 0.85 or 0.70
-    if (requiredWeight / totalWeight) < threshold then
+    if (requiredWeight / tasteWeight) < threshold then
         return false, "Too many extra flavors"
     end
 
@@ -556,8 +571,8 @@ local function RegisterDrinkItemIfNeeded(itemName)
     if RegisteredDrinkItems[itemName] then return end
     RegisterUsableItem(itemName, function(source, item)
         local metadata = Config.FrameworkSettings.usableItemMetadata(item, item)
-        local flavors = (metadata and type(metadata.flavors) == "table") and metadata.flavors or {}
-        local alcoholPct = (metadata and type(metadata.alcoholPct) == "number") and metadata.alcoholPct or 5
+        local flavors = metadata.flavors
+        local alcoholPct = metadata.alcoholPct
         Inventory.RemoveItem(source, itemName, 1)
         TriggerClientEvent("pickle_clubs:useDrinkItem", source, itemName, flavors, alcoholPct)
     end)
@@ -589,10 +604,10 @@ RegisterNetEvent("pickle_clubs:submitDrink", function(stationId, orderId, flavor
             if GetPlayerPing(targetSource) > 0 then
                 local itemName = order.item
                 if itemName and itemName ~= "" then
-                    local flavorsConfig = Config.Bartender and Config.Bartender.flavors or {}
+                    local flavorsConfig = Config.Bartender.flavors
                     local flavorLabels = {}
-                    for _, idx in ipairs(order.flavors or {}) do
-                        local f = flavorsConfig[idx]
+                    for _, key in ipairs(order.flavors) do
+                        local f = flavorsConfig[key]
                         if f then flavorLabels[#flavorLabels + 1] = string.lower(f.label) end
                     end
                     local description
@@ -604,7 +619,7 @@ RegisterNetEvent("pickle_clubs:submitDrink", function(stationId, orderId, flavor
                     else
                         description = "A bar drink."
                     end
-                    local alcoholPct = order.alcoholPct or 5
+                    local alcoholPct = order.alcoholPct
                     if alcoholPct >= 20 then
                         description = description .. " Strong."
                     elseif alcoholPct >= 10 then
@@ -612,7 +627,7 @@ RegisterNetEvent("pickle_clubs:submitDrink", function(stationId, orderId, flavor
                     elseif alcoholPct > 0 then
                         description = description .. " (Light.)"
                     end
-                    local metadata = { flavors = order.flavors or {}, alcoholPct = alcoholPct, description = description }
+                    local metadata = { flavors = order.flavors, alcoholPct = alcoholPct, description = description }
                     RegisterDrinkItemIfNeeded(itemName)
                     if not Inventory.CanCarryItem or Inventory.CanCarryItem(targetSource, itemName, 1) then
                         Inventory.AddItem(targetSource, itemName, 1, metadata)
@@ -659,10 +674,10 @@ lib.callback.register("pickle_clubs:getClubDrinkMenu", function(source, stationI
             list[#list + 1] = {
                 drinkKey = drinkKey,
                 name = entry.name,
-                price = type(entry.price) == "number" and entry.price or 0,
+                price = entry.price,
                 flavors = entry.flavors,
-                alcoholPct = type(entry.alcohol) == "number" and entry.alcohol or 5,
-                item = type(entry.item) == "string" and entry.item or "",
+                alcoholPct = entry.alcohol,
+                item = entry.item,
             }
         end
     end
@@ -712,15 +727,15 @@ RegisterNetEvent("pickle_clubs:placePlayerOrder", function(stationId, drinkKey)
         return
     end
     local menuEntry = menu[drinkKey]
-    local requiredFlavorIndices = type(menuEntry.flavors) == "table" and menuEntry.flavors or {}
-    if #requiredFlavorIndices == 0 then
+    local requiredFlavorKeys = menuEntry.flavors
+    if not requiredFlavorKeys or #requiredFlavorKeys == 0 then
         ShowNotification(source, "Drink has no required flavors")
         return
     end
-    local drinkName = menuEntry.name or ("Drink " .. tostring(drinkKey))
-    local price = type(menuEntry.price) == "number" and menuEntry.price or 0
-    local alcoholPct = type(menuEntry.alcohol) == "number" and menuEntry.alcohol or 5
-    local item = type(menuEntry.item) == "string" and menuEntry.item or ""
+    local drinkName = menuEntry.name
+    local price = menuEntry.price
+    local alcoholPct = menuEntry.alcohol
+    local item = menuEntry.item
     if price > 0 then
         local cash = (GetMoney and GetMoney(source, "money")) or 0
         if cash < price then
@@ -735,8 +750,8 @@ RegisterNetEvent("pickle_clubs:placePlayerOrder", function(stationId, drinkKey)
         id = orderId,
         drinkKey = drinkKey,
         drinkName = drinkName,
-        requiredFlavorIndices = requiredFlavorIndices,
-        flavors = requiredFlavorIndices,
+        requiredFlavorKeys = requiredFlavorKeys,
+        flavors = requiredFlavorKeys,
         alcoholPct = alcoholPct,
         item = item,
         timer = timerDuration,
@@ -753,20 +768,105 @@ end)
 -- Track equipped drinks for syncing
 local EquippedDrinksServer = {} -- source -> {coords, flavorWeights, color, progress, lastUpdate}
 
-RegisterNetEvent("pickle_clubs:giveDrinkItem", function(itemName, flavors, alcoholPct)
+-- Match submitted flavorWeights against the club drink menu; returns the best matching entry or nil
+local function MatchDrinkToMenu(stationId, flavorWeights)
+    local menu = GetClubDrinkMenuForStation(stationId)
+    if not menu or type(menu) ~= "table" then return nil end
+
+    local alcoholKey = (Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.key) or "_alcohol"
+    local alcoholWeight = flavorWeights[alcoholKey] or 0
+    local submittedAlcoholPct = math.floor(alcoholWeight * 100 + 0.5)
+    local tolerance = Config.Bartender.alcoholTolerance or 10
+
+    -- Collect taste flavors from submitted drink
+    local tasteWeight = 0
+    local submittedTaste = {}
+    for key, weight in pairs(flavorWeights) do
+        if key ~= alcoholKey and weight > 0.01 then
+            submittedTaste[key] = weight
+            tasteWeight = tasteWeight + weight
+        end
+    end
+    if tasteWeight < 0.3 then return nil end
+
+    -- Sort submitted taste flavors by weight descending
+    local sortedTaste = {}
+    for key, weight in pairs(submittedTaste) do
+        sortedTaste[#sortedTaste + 1] = { key = key, weight = weight }
+    end
+    table.sort(sortedTaste, function(a, b) return a.weight > b.weight end)
+
+    for _, entry in pairs(menu) do
+        if type(entry) == "table" and type(entry.flavors) == "table" and #entry.flavors > 0
+            and type(entry.item) == "string" and entry.item ~= "" then
+            -- Check alcohol tolerance
+            local entryAlcohol = entry.alcohol or 0
+            if math.abs(submittedAlcoholPct - entryAlcohol) <= tolerance then
+                -- Check all required flavors are present
+                local requiredFlavors = entry.flavors
+                local allPresent = true
+                local requiredWeight = 0
+                for _, flavorKey in ipairs(requiredFlavors) do
+                    local w = submittedTaste[flavorKey] or 0
+                    if w < 0.01 then allPresent = false; break end
+                    requiredWeight = requiredWeight + w
+                end
+                if allPresent then
+                    local threshold = #requiredFlavors == 1 and 0.85 or 0.70
+                    if (requiredWeight / tasteWeight) >= threshold then
+                        return entry
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+RegisterNetEvent("pickle_clubs:giveDrinkItem", function(stationId, flavorWeights)
     local source = source
-    if not itemName then return end
+    if not stationId or not flavorWeights then return end
+
+    local entry = MatchDrinkToMenu(stationId, flavorWeights)
+    if not entry then
+        ShowNotification(source, "This drink doesn't match anything on the menu")
+        return
+    end
+
+    local itemName = entry.item
     if Inventory.CanCarryItem and not Inventory.CanCarryItem(source, itemName, 1) then
         ShowNotification(source, "You cannot carry this item")
         return
     end
-    local metadata = {
-        flavors = type(flavors) == "table" and flavors or {},
-        alcoholPct = type(alcoholPct) == "number" and alcoholPct or 5,
-    }
+
+    local flavorsConfig = Config.Bartender.flavors
+    local flavorLabels = {}
+    for _, key in ipairs(entry.flavors or {}) do
+        local f = flavorsConfig[key]
+        if f then flavorLabels[#flavorLabels + 1] = string.lower(f.label) end
+    end
+    local description
+    if #flavorLabels == 1 then
+        description = ("A %s drink."):format(flavorLabels[1])
+    elseif #flavorLabels > 1 then
+        table.sort(flavorLabels)
+        description = ("A %s mixture."):format(table.concat(flavorLabels, "-"))
+    else
+        description = "A bar drink."
+    end
+    local alcoholPct = entry.alcohol or 0
+    if alcoholPct >= 20 then
+        description = description .. " Strong."
+    elseif alcoholPct >= 10 then
+        description = description .. " (Medium.)"
+    elseif alcoholPct > 0 then
+        description = description .. " (Light.)"
+    end
+
+    local metadata = { flavors = entry.flavors, alcoholPct = alcoholPct, description = description }
     RegisterDrinkItemIfNeeded(itemName)
     Inventory.AddItem(source, itemName, 1, metadata)
-    ShowNotification(source, "You received a " .. itemName)
+    ShowNotification(source, "You received a " .. (entry.name or itemName))
 end)
 
 -- Callback so client only proceeds when server grants control (prevents race where client starts interaction despite denial)
@@ -930,12 +1030,12 @@ RegisterNetEvent("pickle_clubs:syncEquippedDrink", function(coords, flavorWeight
         coords = coords,
         flavorWeights = flavorWeights,
         color = color,
-        progress = progress or 1.0,
+        progress = progress,
         lastUpdate = GetGameTimer()
     }
-    
+
     -- Sync to all nearby players (client will filter by distance)
-    TriggerClientEvent("pickle_clubs:syncEquippedDrinkUpdate", -1, source, coords, flavorWeights, color, progress or 1.0)
+    TriggerClientEvent("pickle_clubs:syncEquippedDrinkUpdate", -1, source, coords, flavorWeights, color, progress)
 end)
 
 -- Periodic sync thread for equipped drinks
@@ -951,7 +1051,7 @@ CreateThread(function()
                 TriggerClientEvent("pickle_clubs:removeEquippedDrink", -1, sourceId)
             else
                 -- Sync to all players periodically (client will filter by distance)
-                TriggerClientEvent("pickle_clubs:syncEquippedDrinkUpdate", -1, sourceId, drinkData.coords, drinkData.flavorWeights, drinkData.color, drinkData.progress or 1.0)
+                TriggerClientEvent("pickle_clubs:syncEquippedDrinkUpdate", -1, sourceId, drinkData.coords, drinkData.flavorWeights, drinkData.color, drinkData.progress)
             end
         end
     end
@@ -971,8 +1071,8 @@ RegisterNetEvent("pickle_clubs:drinkConsumed", function(amount, alcoholPct)
     local source = source
     if not amount or amount <= 0 then return end
     if amount > 1.0 then amount = 1.0 end
-    alcoholPct = tonumber(alcoholPct) or 5
-    if alcoholPct < 0 then alcoholPct = 0 end
+    alcoholPct = tonumber(alcoholPct)
+    if not alcoholPct or alcoholPct < 0 then alcoholPct = 0 end
     if alcoholPct > 100 then alcoholPct = 100 end
     if Config.Drinks and Config.Drinks.alcoholPerDrink and Config.Drinks.alcoholPerDrink > 0 and AddAlcohol then
         local scaled = math.floor(Config.Drinks.alcoholPerDrink * amount * (alcoholPct / 100) + 0.5)

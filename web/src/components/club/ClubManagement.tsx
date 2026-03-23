@@ -56,9 +56,10 @@ type SocietyEntity = {
 
 type ClubEntity = BartenderEntity | BouncerEntity | ClubEntryEntity | SocietyEntity | Record<string, unknown>;
 
-type DrinkMenuItem = { name: string; flavors: number[]; alcohol: number; price: number; item: string };
+type DrinkMenuItem = { name: string; flavors: string[]; alcohol: number; price: number; item: string };
 type DrinkMenu = Record<string, DrinkMenuItem>;
 type ClubFlavor = { label: string; color: [number, number, number]; isAlcohol?: boolean };
+type FlavorMap = Record<string, ClubFlavor>;
 
 interface ClubSummary {
   id: number;
@@ -72,7 +73,7 @@ interface ClubSummary {
 
 interface ClubManagementData {
   clubs?: ClubSummary[];
-  flavors?: ClubFlavor[];
+  flavors?: FlavorMap;
 }
 
 interface ClubEditorState {
@@ -303,11 +304,12 @@ export function ClubManagement() {
   const [view, setView] = useState<ViewMode>("clubsRoot");
   const [busyAction, setBusyAction] = useState(false);
   const [clubs, setClubs] = useState<ClubSummary[]>([]);
-  const [flavors, setFlavors] = useState<ClubFlavor[]>([]);
+  const [flavors, setFlavors] = useState<FlavorMap>({});
   const [selectedClubId, setSelectedClubId] = useState<number | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [creatingClub, setCreatingClub] = useState(false);
   const [creatingEntity, setCreatingEntity] = useState(false);
+  const [expandedDrinkKey, setExpandedDrinkKey] = useState<string | null>(null);
   const [clubDraft, setClubDraft] = useState<ClubEditorState>(createClubDraft());
   const [entityDraft, setEntityDraft] = useState<EntityEditorState>(createEmptyEntityDraft());
   const [newJobName, setNewJobName] = useState("");
@@ -396,6 +398,7 @@ export function ClubManagement() {
     setSelectedEntityId(null);
     setCreatingEntity(false);
     setEntityDraft(createEmptyEntityDraft());
+    setExpandedDrinkKey(null);
     setView("clubDetail");
   };
 
@@ -434,7 +437,7 @@ export function ClubManagement() {
   useNuiEvent("openClubManagement", (data: ClubManagementData & { clubId?: number; entityId?: string }) => {
     const nextClubs = normalizeClubs(data.clubs || []);
     setClubs(nextClubs);
-    setFlavors(Array.isArray(data.flavors) ? data.flavors : []);
+    setFlavors(data.flavors && typeof data.flavors === "object" && !Array.isArray(data.flavors) ? data.flavors : {});
     setCreatingClub(false);
     setClubDraft(createClubDraft());
     setEntityDraft(createEmptyEntityDraft());
@@ -619,7 +622,11 @@ export function ClubManagement() {
   const entityDraftRef = useRef<EntityEditorState>(entityDraft);
   entityDraftRef.current = entityDraft;
 
+  const clubDraftRef = useRef<ClubEditorState>(clubDraft);
+  clubDraftRef.current = clubDraft;
+
   const debouncedEntitySaveRef = useRef<number | null>(null);
+  const debouncedClubSaveRef = useRef<number | null>(null);
   const DEBOUNCE_MS = 500;
 
   const scheduleEntitySave = useCallback(() => {
@@ -640,6 +647,25 @@ export function ClubManagement() {
       }
     }, DEBOUNCE_MS);
   }, [creatingEntity, selectedClubId, selectedEntityId, sendClubAction]);
+
+  const scheduleClubSave = useCallback(() => {
+    if (creatingClub || selectedClubId == null) return;
+    if (debouncedClubSaveRef.current != null) {
+      window.clearTimeout(debouncedClubSaveRef.current);
+    }
+    debouncedClubSaveRef.current = window.setTimeout(() => {
+      debouncedClubSaveRef.current = null;
+      const draft = clubDraftRef.current;
+      if (!draft.label.trim()) return;
+      sendClubAction("updateClub", {
+        clubId: selectedClubId,
+        label: draft.label.trim(),
+        description: draft.description,
+        jobs: draft.jobs,
+        drink_menu: draft.drink_menu,
+      });
+    }, DEBOUNCE_MS);
+  }, [creatingClub, selectedClubId, sendClubAction]);
 
   const createEntity = async () => {
     if (selectedClubId == null || !creatingEntity) return;
@@ -709,6 +735,9 @@ export function ClubManagement() {
     return () => {
       if (debouncedEntitySaveRef.current != null) {
         window.clearTimeout(debouncedEntitySaveRef.current);
+      }
+      if (debouncedClubSaveRef.current != null) {
+        window.clearTimeout(debouncedClubSaveRef.current);
       }
     };
   }, []);
@@ -784,13 +813,19 @@ export function ClubManagement() {
                 <input
                   type="text"
                   value={clubDraft.label}
-                  onChange={(e) => setClubDraft((prev) => ({ ...prev, label: e.target.value }))}
+                  onChange={(e) => {
+                    setClubDraft((prev) => ({ ...prev, label: e.target.value }));
+                    scheduleClubSave();
+                  }}
                   className="w-full h-9 rounded-md border border-border bg-background px-2 text-sm"
                   placeholder="Club label"
                 />
                 <textarea
                   value={clubDraft.description}
-                  onChange={(e) => setClubDraft((prev) => ({ ...prev, description: e.target.value }))}
+                  onChange={(e) => {
+                    setClubDraft((prev) => ({ ...prev, description: e.target.value }));
+                    scheduleClubSave();
+                  }}
                   className="w-full rounded-md border border-border bg-background p-2 text-sm min-h-20"
                   placeholder="Description"
                 />
@@ -860,7 +895,7 @@ export function ClubManagement() {
                 </div>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <div className="text-xs font-medium text-muted-foreground">Drinks</div>
+                    <div className="text-xs font-semibold">Drink Menu</div>
                     <Button
                       type="button"
                       size="sm"
@@ -872,129 +907,226 @@ export function ClubManagement() {
                           ...prev,
                           drink_menu: { ...prev.drink_menu, [id]: emptyDrink() },
                         }));
+                        setExpandedDrinkKey(id);
+                        scheduleClubSave();
                       }}
                     >
                       + Add Drink
                     </Button>
                   </div>
                   {Object.keys(clubDraft.drink_menu || {}).length === 0 && (
-                    <div className="text-xs text-muted-foreground italic">No drinks yet — add one above.</div>
+                    <div className="text-xs text-muted-foreground italic">No drinks yet — click &quot;+ Add Drink&quot; to create one.</div>
                   )}
                   <div className="space-y-2">
                     {Object.entries(clubDraft.drink_menu || {}).map(([key, drink]) => {
-                      const orderable = flavors.filter((f) => !f.isAlcohol);
-                      return (
-                        <div key={key} className="rounded border border-border bg-background p-2 space-y-1.5">
-                          {/* Flavor checkboxes */}
-                          <div className="flex flex-wrap gap-1">
-                            {orderable.map((f, i) => {
-                              const configIdx = flavors.indexOf(f) + 1;
-                              const checked = (drink.flavors ?? []).includes(configIdx);
-                              const [r, g, b] = f.color;
-                              return (
-                                <label
-                                  key={i}
-                                  className="flex items-center gap-1 cursor-pointer text-[10px] px-1.5 py-0.5 rounded-full font-medium select-none border"
-                                  style={{
-                                    backgroundColor: checked ? `rgba(${r},${g},${b},0.18)` : "transparent",
-                                    borderColor: `rgba(${r},${g},${b},0.4)`,
-                                    color: checked ? `rgb(${r},${g},${b})` : "var(--muted-foreground)",
-                                  }}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    className="sr-only"
-                                    checked={checked}
-                                    onChange={() => {
-                                      const next = checked
-                                        ? drink.flavors.filter((x) => x !== configIdx)
-                                        : [...(drink.flavors ?? []), configIdx].sort((a, b) => a - b);
-                                      setClubDraft((prev) => ({
-                                        ...prev,
-                                        drink_menu: { ...prev.drink_menu, [key]: { ...drink, flavors: next } },
-                                      }));
-                                    }}
-                                  />
-                                  {f.label}
-                                </label>
-                              );
-                            })}
-                          </div>
-                          {/* Name + Alc % + Price */}
-                          <div className="flex gap-1.5 items-center">
-                            <input
-                              type="text"
-                              value={drink.name}
-                              onChange={(e) =>
-                                setClubDraft((prev) => ({
-                                  ...prev,
-                                  drink_menu: { ...prev.drink_menu, [key]: { ...drink, name: e.target.value } },
-                                }))
-                              }
-                              className="flex-1 min-w-0 h-7 rounded border border-border bg-transparent px-2 text-xs"
-                              placeholder="Drink name"
-                            />
-                            <input
-                              type="number"
-                              min={0}
-                              max={100}
-                              step={1}
-                              value={drink.alcohol ?? 5}
-                              onChange={(e) =>
-                                setClubDraft((prev) => ({
-                                  ...prev,
-                                  drink_menu: { ...prev.drink_menu, [key]: { ...drink, alcohol: Math.min(100, Math.max(0, parseInt(e.target.value, 10) || 0)) } },
-                                }))
-                              }
-                              className="w-14 h-7 rounded border border-border bg-transparent px-2 text-xs text-center"
-                              title="Alcohol %"
-                            />
-                            <span className="text-[10px] text-muted-foreground shrink-0">%alc</span>
-                            <span className="text-[10px] text-muted-foreground shrink-0">$</span>
-                            <input
-                              type="number"
-                              min={0}
-                              step={1}
-                              value={drink.price ?? 0}
-                              onChange={(e) =>
-                                setClubDraft((prev) => ({
-                                  ...prev,
-                                  drink_menu: { ...prev.drink_menu, [key]: { ...drink, price: Math.max(0, parseInt(e.target.value, 10) || 0) } },
-                                }))
-                              }
-                              className="w-16 h-7 rounded border border-border bg-transparent px-2 text-xs"
-                              title="Price"
-                            />
-                          </div>
-                          {/* Item name + delete */}
-                          <div className="flex gap-1.5 items-center">
-                            <input
-                              type="text"
-                              value={drink.item ?? ""}
-                              onChange={(e) =>
-                                setClubDraft((prev) => ({
-                                  ...prev,
-                                  drink_menu: { ...prev.drink_menu, [key]: { ...drink, item: e.target.value } },
-                                }))
-                              }
-                              className="flex-1 min-w-0 h-7 rounded border border-border bg-transparent px-2 text-xs font-mono"
-                              placeholder="inventory_item_name"
-                            />
+                      const orderableEntries = Object.entries(flavors).filter(([, f]) => !f.isAlcohol);
+                      const updateDrink = (patch: Partial<DrinkMenuItem>) => {
+                        setClubDraft((prev) => ({
+                          ...prev,
+                          drink_menu: { ...prev.drink_menu, [key]: { ...drink, ...patch } },
+                        }));
+                        scheduleClubSave();
+                      };
+                      const isExpanded = expandedDrinkKey === key;
+                      const deleteDrink = () => {
+                        setClubDraft((prev) => {
+                          const next = { ...prev.drink_menu };
+                          delete next[key];
+                          return { ...prev, drink_menu: next };
+                        });
+                        if (expandedDrinkKey === key) setExpandedDrinkKey(null);
+                        scheduleClubSave();
+                      };
+
+                      if (!isExpanded) {
+                        // Collapsed summary row
+                        return (
+                          <div
+                            key={key}
+                            className="rounded-md border border-border bg-secondary/20 px-3 py-2 flex items-center gap-2 cursor-pointer hover:bg-secondary/30 transition-colors"
+                            onClick={() => setExpandedDrinkKey(key)}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium truncate">
+                                {drink.name || <span className="italic text-muted-foreground">Unnamed drink</span>}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                {drink.flavors.map((fk) => {
+                                  const f = flavors[fk];
+                                  if (!f) return null;
+                                  const [r, g, b] = f.color;
+                                  return (
+                                    <span
+                                      key={fk}
+                                      className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                                      style={{ backgroundColor: `rgba(${r},${g},${b},0.2)`, color: `rgb(${r},${g},${b})`, border: `1px solid rgba(${r},${g},${b},0.5)` }}
+                                    >
+                                      {f.label}
+                                    </span>
+                                  );
+                                })}
+                                <span className="text-[10px] text-muted-foreground ml-auto shrink-0">
+                                  {drink.alcohol}% · ${drink.price}
+                                </span>
+                              </div>
+                            </div>
                             <Button
                               type="button"
                               size="sm"
                               variant="ghost"
-                              className="h-7 px-2 text-xs text-destructive shrink-0"
-                              onClick={() =>
-                                setClubDraft((prev) => {
-                                  const next = { ...prev.drink_menu };
-                                  delete next[key];
-                                  return { ...prev, drink_menu: next };
-                                })
-                              }
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 shrink-0"
+                              onClick={(e) => { e.stopPropagation(); deleteDrink(); }}
                             >
-                              Remove
+                              ✕
                             </Button>
+                          </div>
+                        );
+                      }
+
+                      // Expanded editor
+                      return (
+                        <div key={key} className="rounded-md border border-primary/40 bg-secondary/20 p-2.5 space-y-2.5">
+                          {/* Header row */}
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-xs font-semibold text-muted-foreground truncate">
+                              {drink.name || "New drink"}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={deleteDrink}
+                              >
+                                Delete
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 px-2 text-xs"
+                                onClick={() => setExpandedDrinkKey(null)}
+                              >
+                                Done
+                              </Button>
+                            </div>
+                          </div>
+
+                          {/* Drink Name */}
+                          <div>
+                            <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                              Drink Name
+                            </div>
+                            <input
+                              type="text"
+                              value={drink.name}
+                              onChange={(e) => updateDrink({ name: e.target.value })}
+                              className="w-full h-8 rounded border border-border bg-background px-2 text-sm"
+                              placeholder="e.g. Strawberry Daiquiri"
+                            />
+                          </div>
+
+                          {/* Ingredients */}
+                          <div>
+                            <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                              Ingredients
+                            </div>
+                            {orderableEntries.length === 0 ? (
+                              <div className="text-[10px] text-muted-foreground italic">No flavors configured.</div>
+                            ) : (
+                              <div className="flex flex-wrap gap-1">
+                                {orderableEntries.map(([flavorKey, f]) => {
+                                  const checked = (drink.flavors ?? []).includes(flavorKey);
+                                  const [r, g, b] = f.color;
+                                  return (
+                                    <label
+                                      key={flavorKey}
+                                      className="flex items-center gap-1 cursor-pointer text-[10px] px-2 py-1 rounded-full font-medium select-none border transition-colors"
+                                      style={{
+                                        backgroundColor: checked ? `rgba(${r},${g},${b},0.2)` : "transparent",
+                                        borderColor: checked ? `rgba(${r},${g},${b},0.6)` : "var(--border)",
+                                        color: checked ? `rgb(${r},${g},${b})` : "var(--muted-foreground)",
+                                      }}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        className="sr-only"
+                                        checked={checked}
+                                        onChange={() => {
+                                          const next = checked
+                                            ? drink.flavors.filter((x) => x !== flavorKey)
+                                            : [...(drink.flavors ?? []), flavorKey].sort();
+                                          updateDrink({ flavors: next });
+                                        }}
+                                      />
+                                      {checked && (
+                                        <span
+                                          className="inline-block w-2 h-2 rounded-full shrink-0"
+                                          style={{ backgroundColor: `rgb(${r},${g},${b})` }}
+                                        />
+                                      )}
+                                      {f.label}
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Alcohol % + Price */}
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                                Alcohol %
+                              </div>
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  step={1}
+                                  value={drink.alcohol ?? 5}
+                                  onChange={(e) =>
+                                    updateDrink({ alcohol: Math.min(100, Math.max(0, parseInt(e.target.value, 10) || 0)) })
+                                  }
+                                  className="w-full h-8 rounded border border-border bg-background px-2 pr-7 text-sm"
+                                />
+                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none">%</span>
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                                Price
+                              </div>
+                              <div className="relative">
+                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none">$</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={drink.price ?? 0}
+                                  onChange={(e) =>
+                                    updateDrink({ price: Math.max(0, parseInt(e.target.value, 10) || 0) })
+                                  }
+                                  className="w-full h-8 rounded border border-border bg-background px-2 pl-5 text-sm"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Inventory Item */}
+                          <div>
+                            <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                              Inventory Item
+                            </div>
+                            <input
+                              type="text"
+                              value={drink.item ?? ""}
+                              onChange={(e) => updateDrink({ item: e.target.value })}
+                              className="w-full h-8 rounded border border-border bg-background px-2 text-sm font-mono"
+                              placeholder="inventory_item_name"
+                            />
                           </div>
                         </div>
                       );
@@ -1010,10 +1142,11 @@ export function ClubManagement() {
                   </>
                 )}
                 <div className="flex gap-2">
-                  <Button size="sm" onClick={saveClub} disabled={busyAction}>
-                    {creatingClub ? "Create Club" : "Save Club"}
-                  </Button>
-                  {!creatingClub && (
+                  {creatingClub ? (
+                    <Button size="sm" onClick={saveClub} disabled={busyAction}>
+                      Create Club
+                    </Button>
+                  ) : (
                     <Button size="sm" variant="destructive" onClick={deleteClub} disabled={busyAction}>
                       Delete Club
                     </Button>

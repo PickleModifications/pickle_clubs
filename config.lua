@@ -41,30 +41,20 @@ Config.FrameworkSettings = {
 
 Config.Bartender = {
     mixThreshold = 0.25, -- This is the minimum requirement of a secondary flavor to be considered for a mixed drink.
-    -- Index of the "Alcohol" entry in flavors; this is the base (not orderable). The more poured, the stronger the drink.
+    -- Flavors are key-value pairs; adding/removing a key never shifts other references.
+    -- Alcohol strength is set per-drink (the alcohol% field) — it is not a flavor.
     flavors = {
-        {
-            label = "Strawberry",
-            color = {255, 0, 0},
-        },
-        {
-            label = "Lime",
-            color = {0, 255, 0},
-        },
-        {
-            label = "Blueberry",
-            color = {0, 0, 255},
-        },
-        {
-            label = "Banana",
-            color = {255, 255, 0},
-        },
-        {
-            label = "Alcohol",
-            color = {255, 255, 255},
-            isAlcohol = true, -- Controls drink strength; excluded from orderable flavors
-        },
+        ["strawberry"] = { label = "Strawberry", color = {255, 0, 0} },
+        ["lime"]       = { label = "Lime",       color = {0, 255, 0} },
+        ["blueberry"]  = { label = "Blueberry",  color = {50, 50, 255} },
+        ["banana"]     = { label = "Banana",     color = {255, 255, 0} },
     },
+    alcoholBottle = {
+        label = "Alcohol",
+        color = {255, 255, 255}, -- White
+        key = "_alcohol", -- Reserved flavorWeights key (excluded from item names and color mixing)
+    },
+    alcoholTolerance = 10, -- Allowed deviation in alcohol % (e.g. order wants 20%, player can submit 10-30%)
     orderSpawnOffset = -2.0, -- Distance along forwardVector to spawn NPCs (negative = behind bar)
     orderQueueSpacing = 0.8, -- Spacing between NPCs in queue (along rightVector)
     orderTimerDuration = 60, -- Order timeout in seconds
