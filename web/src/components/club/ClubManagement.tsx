@@ -80,6 +80,7 @@ interface ClubManagementData {
   clubs?: ClubSummary[];
   flavors?: FlavorMap;
   peds?: PedMap;
+  defaultDrinks?: DrinkMenu;
 }
 
 interface ClubBlip {
@@ -157,10 +158,12 @@ function normalizeClubs(raw: ClubSummary[]): ClubSummary[] {
   }));
 }
 
-function createClubDraft(club?: ClubSummary): ClubEditorState {
+function createClubDraft(club?: ClubSummary, defaults?: DrinkMenu): ClubEditorState {
   const jobs = Array.isArray(club?.jobs) ? club.jobs : [];
-  const drink_menu: DrinkMenu =
-    club?.drink_menu && typeof club.drink_menu === "object" ? (club.drink_menu as DrinkMenu) : {};
+  const hasDrinks = club?.drink_menu && typeof club.drink_menu === "object" && Object.keys(club.drink_menu).length > 0;
+  const drink_menu: DrinkMenu = hasDrinks
+    ? (club.drink_menu as DrinkMenu)
+    : (defaults && Object.keys(defaults).length > 0 ? { ...defaults } : {});
   const blip = club?.blip;
   return {
     label: club?.label || "",
@@ -316,6 +319,7 @@ export function ClubManagement() {
   const [clubs, setClubs] = useState<ClubSummary[]>([]);
   const [flavors, setFlavors] = useState<FlavorMap>({});
   const [peds, setPeds] = useState<PedMap>({});
+  const [defaultDrinks, setDefaultDrinks] = useState<DrinkMenu>({});
   const [selectedClubId, setSelectedClubId] = useState<number | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [creatingClub, setCreatingClub] = useState(false);
@@ -397,7 +401,7 @@ export function ClubManagement() {
   const openCreateClub = () => {
     setCreatingClub(true);
     setSelectedClubId(null);
-    setClubDraft(createClubDraft());
+    setClubDraft(createClubDraft(undefined, defaultDrinks));
     setView("clubDetail");
   };
 
@@ -451,6 +455,7 @@ export function ClubManagement() {
     setClubs(nextClubs);
     setFlavors(data.flavors && typeof data.flavors === "object" && !Array.isArray(data.flavors) ? data.flavors : {});
     setPeds((data as any).peds && typeof (data as any).peds === "object" ? (data as any).peds : {});
+    setDefaultDrinks((data as any).defaultDrinks && typeof (data as any).defaultDrinks === "object" ? (data as any).defaultDrinks : {});
     setCreatingClub(false);
     setClubDraft(createClubDraft());
     setEntityDraft(createEmptyEntityDraft());

@@ -635,19 +635,19 @@ local function RegisterDrinkItemIfNeeded(itemName)
         local flavors = metadata and metadata.flavors or nil
         local alcoholPct = metadata and metadata.alcoholPct or nil
 
-        -- Fallback: look up alcohol % from club menus if metadata doesn't have it
-        if not alcoholPct or alcoholPct == 0 then
+        -- Fallback: look up flavors and alcohol % from club menus if metadata doesn't have them
+        if not flavors or not alcoholPct or alcoholPct == 0 then
             for _, club in pairs(Clubs) do
                 if club.drink_menu then
                     for _, entry in pairs(club.drink_menu) do
                         if entry.item == itemName then
-                            alcoholPct = entry.alcohol or 0
-                            if not flavors then flavors = entry.flavors end
+                            if not flavors then flavors = GetValidFlavors(entry) end
+                            if not alcoholPct or alcoholPct == 0 then alcoholPct = entry.alcohol or 0 end
                             break
                         end
                     end
                 end
-                if alcoholPct and alcoholPct > 0 then break end
+                if flavors and alcoholPct and alcoholPct > 0 then break end
             end
         end
 

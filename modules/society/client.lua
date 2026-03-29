@@ -184,11 +184,12 @@ local function RenderSociety(clubId, entityId)
     if type(coords) == "table" then
         coords = vector3(coords.x or coords[1], coords.y or coords[2], coords.z or coords[3])
     end
-    local interactCoords = coords + vector3(0.0, 0.0, 1.0)
+    local interactCoords = coords
     local heading = entity.society.heading or 0.0
 
     local interactionIndex = CreateInteraction({
-        label = "Society",
+        label = "Management",
+        icon = Config.TargetIcons.society,
         coords = interactCoords,
         heading = heading,
     }, function()
@@ -213,7 +214,7 @@ local function RenderSociety(clubId, entityId)
                 local contextId = ("society_interact_%s_%s"):format(clubId, entityId)
                 lib.registerContext({
                     id = contextId,
-                    title = "Society",
+                    title = "Management",
                     options = options,
                 })
                 lib.showContext(contextId)

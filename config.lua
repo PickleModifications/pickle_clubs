@@ -20,6 +20,12 @@ Config.AdminGroups = {
 }
 Config.TargetIcons = {
     bartender = "fas fa-cocktail",
+    bouncer = "fas fa-shield-alt",
+    club_entry = "fas fa-door-open",
+    society = "fas fa-building",
+    escort = "fas fa-walking",
+    search = "fas fa-search",
+    release = "fas fa-hand-paper",
 }
 
 -- Jobs that bypass club entry/bouncer checks regardless of club job assignments.

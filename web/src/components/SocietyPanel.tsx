@@ -174,7 +174,7 @@ export const SocietyPanel = () => {
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
           <div>
-            <h2 className="text-lg font-bold text-primary">Society</h2>
+            <h2 className="text-lg font-bold text-primary">Management</h2>
             {data && <div className="text-xs text-muted-foreground">{data.clubName}</div>}
           </div>
           <button onClick={handleClose} className="text-muted-foreground hover:text-primary text-xl leading-none px-1">

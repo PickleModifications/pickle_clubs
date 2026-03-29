@@ -65,24 +65,6 @@ RegisterNUICallback("closeClubManagement", function(_, cb)
     cb({ ok = true })
 end)
 
-RegisterNUICallback("getPlayerCoords", function(_, cb)
-    local coords = RunWithReleasedManagementFocus(function()
-        local gizmo = StartGizmoEditor({
-            model = `prop_tennis_ball`,
-            coords = GetEntityCoords(PlayerPedId()),
-            rotation = vector3(0.0, 0.0, 0.0),
-            enableCancel = true,
-        })
-        if not gizmo or not gizmo.position then return nil end
-        return gizmo.position
-    end)
-    if coords then
-        cb({ x = coords.x, y = coords.y, z = coords.z })
-    else
-        cb(nil)
-    end
-end)
-
 RegisterNUICallback("teleportToEntity", function(data, cb)
     if data and data.clubId and data.entityId then
         local clubId = tonumber(data.clubId)
@@ -121,6 +103,24 @@ local function RunWithReleasedManagementFocus(cb)
     end
     return table.unpack(results)
 end
+
+RegisterNUICallback("getPlayerCoords", function(_, cb)
+    local coords = RunWithReleasedManagementFocus(function()
+        local gizmo = StartGizmoEditor({
+            model = `prop_tennis_ball`,
+            coords = GetEntityCoords(PlayerPedId()),
+            rotation = vector3(0.0, 0.0, 0.0),
+            enableCancel = true,
+        })
+        if not gizmo or not gizmo.position then return nil end
+        return gizmo.position
+    end)
+    if coords then
+        cb({ x = coords.x, y = coords.y, z = coords.z })
+    else
+        cb(nil)
+    end
+end)
 
 local function BuildEntityPayloadFromUiWithGizmo(clubId, entityType, sourcePayload)
     local club = Clubs[clubId]
@@ -632,8 +632,7 @@ local function BuildSocietyEntityFromInput(baseEntity, defaultCoords, defaultHea
     local current = (baseEntity and baseEntity.society) or {}
     local startCoords = ToVector3(current.coords, defaultCoords)
     local startHeading = current.heading or defaultHeading or 0.0
-    local model = Config.Society and Config.Society.model or `prop_atm_01`
-    local coords, heading = PlaceWithGizmo(startCoords, startHeading, model, false)
+    local coords, heading = PlaceWithGizmo(startCoords, startHeading, `prop_tennis_ball`, false)
     if not coords then return nil end
 
     return {
@@ -798,8 +797,7 @@ function UpdateSocietyPosition(entity, club)
     local current = entity.society or {}
     local startCoords = ToVector3(current.coords, club.coords)
     local startHeading = current.heading or 0.0
-    local model = Config.Society and Config.Society.model or `prop_atm_01`
-    local coords, heading = PlaceWithGizmo(startCoords, startHeading, model, false)
+    local coords, heading = PlaceWithGizmo(startCoords, startHeading, `prop_tennis_ball`, false)
     if not coords then return nil end
 
     local updated = DeepCopy(entity)
@@ -845,7 +843,7 @@ local function EntityTitle(entityType)
     if entityType == "bartender" then return "Bartender" end
     if entityType == "bouncer" then return "Bouncer" end
     if entityType == "club_entry" then return "Club Entry" end
-    if entityType == "society" then return "Society" end
+    if entityType == "society" then return "Management" end
     return entityType
 end
 
@@ -931,7 +929,7 @@ function OpenClubEntityMenu(clubId, entityId)
     elseif entity.type == "society" then
         table.insert(options, {
             title = "Move Position",
-            description = "Reposition the society interaction point",
+            description = "Reposition the management interaction point",
             onSelect = function()
                 local payload = WithTemporarilyHiddenEntity(clubId, entityId, function()
                     return UpdateSocietyPosition(entity, club)
@@ -1082,8 +1080,8 @@ local function OpenClubManageMenu(clubId)
                         end,
                     },
                     {
-                        title = "Add Society",
-                        description = "Create a society deposit/withdraw interaction point",
+                        title = "Add Management",
+                        description = "Create a management interaction point",
                         onSelect = function()
                             local payload = BuildEntityPayload("society", nil, club)
                             if payload then
@@ -1201,6 +1199,7 @@ function OpenClubManagementNui()
             clubs = SerializeClubsForNui(),
             flavors = Config.Bartender and Config.Bartender.flavors or {},
             peds = Config.Peds or {},
+            defaultDrinks = Config.DefaultDrinks or {},
         })
     end)
 end

@@ -2102,7 +2102,7 @@ RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavors, alcoho
                 
                 -- Drink while E is held - continuous smooth draining
                 local drinkStartTime = GetGameTimer()
-                local drinkDuration = 1000 -- 1 second to fully drain (testing)
+                local drinkDuration = 20000 -- 20 seconds to fully drain
                 local lastProgressUpdate = GetGameTimer()
                 local lastServerSync = GetGameTimer()
                 local initialProgress = equippedDrinkRef.progress

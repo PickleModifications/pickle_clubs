@@ -59,7 +59,8 @@ function RenderClubEntry(id, entityId)
     -- TODO entry.eject
     local interactionIndex = CreateInteraction({
         label = _L("enter_line"),
-        coords = entity.bouncer.coords + vector3(0.0, 0.0, 1.0), 
+        icon = Config.TargetIcons.club_entry,
+        coords = entity.bouncer.coords + vector3(0.0, 0.0, 1.0),
         heading = entity.bouncer.heading,
     }, function()
         lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)

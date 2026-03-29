@@ -84,7 +84,8 @@ function RenderBouncer(id, entityId)
     -- TODO entry.line
     local interactionIndex = CreateInteraction({
         label = "Bouncer",
-        coords = entity.bouncer.coords + vector3(0.0, 0.0, 1.0), 
+        icon = Config.TargetIcons.bouncer,
+        coords = entity.bouncer.coords + vector3(0.0, 0.0, 1.0),
         heading = entity.bouncer.heading,
     }, function()
         lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
@@ -468,7 +469,7 @@ local function OpenBouncerActionsMenu()
         table.insert(options, {
             title = _L("bouncer_release"),
             description = _L("bouncer_release_desc"),
-            icon = "fas fa-hand-paper",
+            icon = Config.TargetIcons.release,
             onSelect = function()
                 StopEscort()
                 ShowNotification(_L("bouncer_escort_released"))
@@ -478,7 +479,7 @@ local function OpenBouncerActionsMenu()
         table.insert(options, {
             title = _L("bouncer_escort"),
             description = _L("bouncer_escort_desc"),
-            icon = "fas fa-walking",
+            icon = Config.TargetIcons.escort,
             onSelect = function()
                 local target = GetClosestPlayer(3.0)
                 if not target then
@@ -493,7 +494,7 @@ local function OpenBouncerActionsMenu()
     table.insert(options, {
         title = _L("bouncer_search"),
         description = _L("bouncer_search_desc"),
-        icon = "fas fa-search",
+        icon = Config.TargetIcons.search,
         onSelect = function()
             local target = GetClosestPlayer(3.0)
             if not target then
@@ -516,3 +517,41 @@ RegisterCommand("+bouncer_actions", function()
     OpenBouncerActionsMenu()
 end, false)
 RegisterKeyMapping("+bouncer_actions", "Bouncer Actions", "keyboard", "F6")
+
+-- Target system: add bouncer actions to player targets
+if Config.UseTarget and AddTargetGlobalPlayer then
+    AddTargetGlobalPlayer({
+        {
+            name = "bouncer_escort",
+            label = _L("bouncer_escort"),
+            icon = Config.TargetIcons.escort,
+            interactCheck = function(targetServerId)
+                return IsPlayerBouncer() and not EscortedPlayer
+            end,
+            onSelected = function(targetServerId)
+                for _, playerId in ipairs(GetActivePlayers()) do
+                    if GetPlayerServerId(playerId) == targetServerId then
+                        StartEscort({ playerId = playerId, serverId = targetServerId, ped = GetPlayerPed(playerId) })
+                        return
+                    end
+                end
+            end,
+        },
+        {
+            name = "bouncer_search",
+            label = _L("bouncer_search"),
+            icon = Config.TargetIcons.search,
+            interactCheck = function(targetServerId)
+                return IsPlayerBouncer()
+            end,
+            onSelected = function(targetServerId)
+                for _, playerId in ipairs(GetActivePlayers()) do
+                    if GetPlayerServerId(playerId) == targetServerId then
+                        SearchPlayer({ playerId = playerId, serverId = targetServerId, ped = GetPlayerPed(playerId) })
+                        return
+                    end
+                end
+            end,
+        },
+    })
+end
