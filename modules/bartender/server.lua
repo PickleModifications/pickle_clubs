@@ -1,6 +1,20 @@
 -- Multi-Station Bartender Server
 -- Bartender entities are stored in Clubs[id].entities[entityId].
 
+-- Check if a drink entry has all valid flavors (all flavor keys exist in Config.Bartender.flavors)
+function DrinkHasValidFlavors(entry)
+    if type(entry) ~= "table" or type(entry.flavors) ~= "table" or #entry.flavors == 0 then
+        return false
+    end
+    local configFlavors = Config.Bartender and Config.Bartender.flavors or {}
+    for _, flavorKey in ipairs(entry.flavors) do
+        if not configFlavors[flavorKey] then
+            return false
+        end
+    end
+    return true
+end
+
 -- Per-station runtime data: stationId -> {orderQueue, serviceActive, interactionData, spawnThread, timerThread}
 StationData = {}
 StationRegistry = {} -- stationId -> persisted station metadata from club entity
@@ -174,7 +188,7 @@ function GenerateAllDrinkItems()
     local seen = {}
     for _, club in pairs(Clubs or {}) do
         for _, entry in pairs(club.drink_menu or {}) do
-            if type(entry) == "table" and type(entry.item) == "string" and entry.item ~= "" and not seen[entry.item] then
+            if type(entry) == "table" and type(entry.item) == "string" and entry.item ~= "" and not seen[entry.item] and DrinkHasValidFlavors(entry) then
                 seen[entry.item] = true
                 items[#items + 1] = {
                     name = entry.item,
@@ -248,7 +262,7 @@ function GenerateDrinkOrder(stationId)
     local entries = {}
     for key, entry in pairs(menu) do
         if type(entry) == "table" and type(entry.name) == "string" and entry.name ~= ""
-            and type(entry.flavors) == "table" and #entry.flavors > 0 then
+            and DrinkHasValidFlavors(entry) then
             entries[#entries + 1] = { key = key, entry = entry }
         end
     end
@@ -435,6 +449,13 @@ function StartBartenderService(stationId, coords, heading)
 
     -- Do not clear orderQueue; player orders may already be in queue
 
+    -- Check if there are any valid drinks on the menu
+    local hasValidDrinks = GenerateDrinkOrder(stationId) ~= nil
+    if not hasValidDrinks then
+        stationData.serviceActive = false
+        return false, "No eligible drinks on the menu. Update the drink menu to use valid flavors."
+    end
+
     -- Timer thread is already running from EnsureStationData
 
     -- Start spawn thread
@@ -446,10 +467,10 @@ function StartBartenderService(stationId, coords, heading)
             end
         end
     end)
-    
+
     -- Spawn first order immediately
     SpawnNextOrder(stationId)
-    
+
     return true
 end
 
@@ -490,12 +511,13 @@ RegisterNetEvent("pickle_clubs:startBartenderService", function(stationId, coord
         return
     end
     
-    if StartBartenderService(stationId, coords, heading) then
+    local serviceStarted, failMessage = StartBartenderService(stationId, coords, heading)
+    if serviceStarted then
         print("Bartender service started by player: " .. source .. " for station: " .. stationId)
     else
         -- Clear controller if service failed to start
         ClearStationController(stationId, "service")
-        TriggerClientEvent("pickle_clubs:stationControlDenied", source, "Failed to start service")
+        TriggerClientEvent("pickle_clubs:stationControlDenied", source, failMessage or "Failed to start service")
     end
 end)
 
@@ -547,17 +569,32 @@ function ValidateDrink(stationId, orderId, flavorWeights)
     end
     if tasteWeight < 0.3 then return false, "Drink not full enough" end
 
+    local numRequired = #requiredFlavors
     local requiredWeight = 0
-    for i = 1, #requiredFlavors do
+    local flavorRatios = {}
+    for i = 1, numRequired do
         local flavorKey = requiredFlavors[i]
         local weight = flavorWeights[flavorKey] or 0
         if weight < 0.01 then return false, "Missing required flavor" end
         requiredWeight = requiredWeight + weight
+        flavorRatios[#flavorRatios + 1] = weight
     end
 
-    local threshold = #requiredFlavors == 1 and 0.85 or 0.70
+    local threshold = numRequired == 1 and 0.85 or 0.70
     if (requiredWeight / tasteWeight) < threshold then
         return false, "Too many extra flavors"
+    end
+
+    -- Balance check: each flavor should be close to 1/n of the required weight
+    if numRequired > 1 then
+        local balanceTolerance = 0.15
+        local idealShare = 1.0 / numRequired
+        for _, w in ipairs(flavorRatios) do
+            local share = w / requiredWeight
+            if math.abs(share - idealShare) > balanceTolerance then
+                return false, "Flavors not balanced"
+            end
+        end
     end
 
     return true, "Correct"
@@ -571,8 +608,27 @@ local function RegisterDrinkItemIfNeeded(itemName)
     if RegisteredDrinkItems[itemName] then return end
     RegisterUsableItem(itemName, function(source, item)
         local metadata = Config.FrameworkSettings.usableItemMetadata(item, item)
-        local flavors = metadata.flavors
-        local alcoholPct = metadata.alcoholPct
+        debugPrint(("[RegisterDrinkItem] item=%s metadata=%s"):format(json.encode(item), json.encode(metadata)))
+        local flavors = metadata and metadata.flavors or nil
+        local alcoholPct = metadata and metadata.alcoholPct or nil
+
+        -- Fallback: look up alcohol % from club menus if metadata doesn't have it
+        if not alcoholPct or alcoholPct == 0 then
+            for _, club in pairs(Clubs) do
+                if club.drink_menu then
+                    for _, entry in pairs(club.drink_menu) do
+                        if entry.item == itemName then
+                            alcoholPct = entry.alcohol or 0
+                            if not flavors then flavors = entry.flavors end
+                            break
+                        end
+                    end
+                end
+                if alcoholPct and alcoholPct > 0 then break end
+            end
+        end
+
+        alcoholPct = alcoholPct or 0
         Inventory.RemoveItem(source, itemName, 1)
         TriggerClientEvent("pickle_clubs:useDrinkItem", source, itemName, flavors, alcoholPct)
     end)
@@ -670,7 +726,7 @@ lib.callback.register("pickle_clubs:getClubDrinkMenu", function(source, stationI
     local list = {}
     for drinkKey, entry in pairs(menu) do
         if type(entry) == "table" and type(entry.name) == "string" and entry.name ~= ""
-            and type(entry.flavors) == "table" and #entry.flavors >= 1 then
+            and DrinkHasValidFlavors(entry) then
             list[#list + 1] = {
                 drinkKey = drinkKey,
                 name = entry.name,
@@ -727,11 +783,11 @@ RegisterNetEvent("pickle_clubs:placePlayerOrder", function(stationId, drinkKey)
         return
     end
     local menuEntry = menu[drinkKey]
-    local requiredFlavorKeys = menuEntry.flavors
-    if not requiredFlavorKeys or #requiredFlavorKeys == 0 then
-        ShowNotification(source, "Drink has no required flavors")
+    if not DrinkHasValidFlavors(menuEntry) then
+        ShowNotification(source, "Drink is unavailable")
         return
     end
+    local requiredFlavorKeys = menuEntry.flavors
     local drinkName = menuEntry.name
     local price = menuEntry.price
     local alcoholPct = menuEntry.alcohol
@@ -1069,15 +1125,19 @@ end)
 -- Handle scaled alcohol when player actually drinks (holds E); amount is proportion consumed 0-1
 RegisterNetEvent("pickle_clubs:drinkConsumed", function(amount, alcoholPct)
     local source = source
+    debugPrint(("[drinkConsumed] source=%s amount=%s alcoholPct=%s AddAlcohol=%s"):format(tostring(source), tostring(amount), tostring(alcoholPct), tostring(AddAlcohol ~= nil)))
     if not amount or amount <= 0 then return end
     if amount > 1.0 then amount = 1.0 end
     alcoholPct = tonumber(alcoholPct)
     if not alcoholPct or alcoholPct < 0 then alcoholPct = 0 end
     if alcoholPct > 100 then alcoholPct = 100 end
-    if Config.Drinks and Config.Drinks.alcoholPerDrink and Config.Drinks.alcoholPerDrink > 0 and AddAlcohol then
-        local scaled = math.floor(Config.Drinks.alcoholPerDrink * amount * (alcoholPct / 100) + 0.5)
-        if scaled > 0 then
-            AddAlcohol(source, scaled)
+    if AddAlcohol then
+        -- Send raw alcohol contribution: amount consumed * alcohol fraction
+        -- e.g. full drink at 5% = 1.0 * 0.05 = 0.05
+        local alcoholValue = amount * (alcoholPct / 100)
+        debugPrint(("[drinkConsumed] alcoholValue=%s"):format(tostring(alcoholValue)))
+        if alcoholValue > 0 then
+            AddAlcohol(source, alcoholValue)
         end
     end
 end)

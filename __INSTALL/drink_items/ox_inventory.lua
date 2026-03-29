@@ -2,8 +2,8 @@
 -- Add these to your ox_inventory/data/items.lua file
 
 ['beer'] = {
-    label = 'aa a',
+    label = 'Beer',
     weight = 200,
     stack = true,
-    description = 'aa a from the bar.'
+    description = 'Beer from the bar.'
 },

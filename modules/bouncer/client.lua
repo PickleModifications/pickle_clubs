@@ -134,10 +134,40 @@ function GetBouncer(id, entityId)
     return Bouncers[id] and Bouncers[id][entityId]
 end
 
+-- Check if the player's job matches any of the club's assigned jobs or bypass jobs
+function PlayerHasClubJobAccess(clubId)
+    -- Check bypass jobs first (e.g. police can enter any club)
+    if Config.BypassJobs and next(Config.BypassJobs) then
+        if CanAccessGroup(Config.BypassJobs) then
+            debugPrint("[Bouncer] Bypass job access granted for clubId: " .. tostring(clubId))
+            return true
+        end
+    end
+    -- Check club-specific jobs
+    local club = Clubs[clubId]
+    if not club or not club.jobs then
+        debugPrint("[Bouncer] No club or jobs for clubId: " .. tostring(clubId))
+        return false
+    end
+    local jobAccess = {}
+    for _, j in ipairs(club.jobs) do
+        if j.name and j.name ~= "" then
+            jobAccess[j.name] = 0 -- grade 0 = any grade level
+        end
+    end
+    if not next(jobAccess) then
+        debugPrint("[Bouncer] No valid job names found for club")
+        return false
+    end
+    local hasAccess = CanAccessGroup(jobAccess)
+    debugPrint("[Bouncer] Job access check: " .. tostring(hasAccess) .. " for clubId: " .. tostring(clubId))
+    return hasAccess
+end
+
 function BouncerThread(id, entityId)
     local progressPerTick = 1
     local data = GetBouncer(id, entityId)
-    if CanEnterClub(id) or PLAYING_BOUNCER_SCENE then return end
+    if CanEnterClub(id) or PLAYING_BOUNCER_SCENE or PlayerHasClubJobAccess(id) then return end
     if not data then return end
     if not ClosestBouncer or ClosestBouncer.clubId ~= id or ClosestBouncer.entityId ~= entityId then
         ClosestBouncer = {

@@ -732,7 +732,7 @@ MySQL.ready(function()
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         )
     ]], {}, function()
-        MySQL.Async.execute("ALTER TABLE pickle_clubs ADD COLUMN drink_menu JSON NULL", {}, function() end)
+        MySQL.Async.execute("ALTER TABLE pickle_clubs ADD COLUMN IF NOT EXISTS drink_menu JSON NULL", {}, function() end)
         MySQL.Async.execute([[
             CREATE TABLE IF NOT EXISTS pickle_club_entities (
                 id INT AUTO_INCREMENT PRIMARY KEY,

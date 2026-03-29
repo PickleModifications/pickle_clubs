@@ -1,6 +1,8 @@
 INT_ENTITIES = {}
 CURRENT_ENTITY = nil
 CURRENT_INTERACTION = nil
+HOVERED_ENTITY = nil
+SCROLL_INPUT = 0 -- -1 = scroll up, 1 = scroll down, 0 = none
 local InteractiveEntityTypes = {}
 
 function lerp(a, b, t)
@@ -160,6 +162,37 @@ function StartInteraction(coords, heading)
             local x, y = GetActualScreenResolution()
             screenX = screenX / x
             screenY = screenY / y
+            -- Update hovered entity and scroll input before entity threads
+            if not CURRENT_ENTITY then
+                local hit, _, entityHit = GetCursorRaycast(camCoords, camRotation)
+                HOVERED_ENTITY = (hit and entityHit and DoesEntityExist(entityHit) and INT_ENTITIES[entityHit]) and entityHit or nil
+                -- Check multiple scroll control methods
+                local s1 = IsControlJustPressed(1, 15)
+                local s2 = IsControlJustPressed(1, 14)
+                local s3 = IsDisabledControlJustPressed(0, 241)
+                local s4 = IsDisabledControlJustPressed(0, 242)
+                local s5 = IsControlJustPressed(0, 241)
+                local s6 = IsControlJustPressed(0, 242)
+                local s7 = IsControlJustPressed(2, 241)
+                local s8 = IsControlJustPressed(2, 242)
+                if s1 or s2 or s3 or s4 or s5 or s6 or s7 or s8 then
+                    debugPrint(("[Scroll] 1:15=%s 1:14=%s 0:241=%s 0:242=%s 0:241c=%s 0:242c=%s 2:241=%s 2:242=%s hovered=%s"):format(
+                        tostring(s1), tostring(s2), tostring(s3), tostring(s4),
+                        tostring(s5), tostring(s6), tostring(s7), tostring(s8),
+                        tostring(HOVERED_ENTITY)
+                    ))
+                end
+                if s1 or s3 or s5 or s7 then
+                    SCROLL_INPUT = 1
+                elseif s2 or s4 or s6 or s8 then
+                    SCROLL_INPUT = -1
+                else
+                    SCROLL_INPUT = 0
+                end
+            else
+                HOVERED_ENTITY = nil
+                SCROLL_INPUT = 0
+            end
             for k,v in pairs(INT_ENTITIES) do
                 InteractiveEntityThread(k, {
                     coords = coords,
@@ -236,16 +269,23 @@ function StartInteraction(coords, heading)
                 if v.display then
                     local onScreen, entityScreenX, entityScreenY = GetScreenCoordFromWorldCoord(entityCoords.x, entityCoords.y, entityCoords.z)
                     local rotation = GetEntityRotation(k, 2)
-                    -- coords + (forwardVector * -0.5)
-
-                    local hit, cursorCoords, entityHit = GetCursorRaycast(camCoords, camRotation)
-                    local distance = #(cursorCoords - entityCoords)
-                    local scale = lerp(1.0, 0.0, distance / 0.5)
-                    if scale < 0.00 then
-                        scale = 0.00
-                    end
-                    if scale > 1 then
-                        scale = 1
+                    local maxScale = v.display.maxScale or 1.0
+                    local minScale = v.display.minScale or 0.0
+                    local scale = maxScale
+                    if v.display.hiddenHover then
+                        -- Use 2D screen distance between cursor and entity for stable scaling
+                        local cursorX, cursorY = GetNuiCursorPosition()
+                        local resX, resY = GetActiveScreenResolution()
+                        local normalizedCursorX = cursorX / resX
+                        local normalizedCursorY = cursorY / resY
+                        local screenDist = math.sqrt((normalizedCursorX - entityScreenX)^2 + (normalizedCursorY - entityScreenY)^2)
+                        local itemSize = v.display.itemSize or 0.08 -- screen-space radius for full scale
+                        if screenDist <= itemSize then
+                            scale = maxScale
+                        else
+                            scale = lerp(maxScale, 0.0, (screenDist - itemSize) / itemSize)
+                        end
+                        if scale < minScale then scale = minScale end
                     end
                     SendNUIMessage({
                         type = "updateInteractiveEntityDisplay",
@@ -257,7 +297,7 @@ function StartInteraction(coords, heading)
                             onScreen = onScreen,
                             screenX = entityScreenX,
                             screenY = entityScreenY,
-                            scale = not v.display.hiddenHover and 1.0 or scale,
+                            scale = scale,
                         }
                     })
                 end

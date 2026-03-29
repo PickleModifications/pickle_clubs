@@ -134,7 +134,7 @@ end
 function ClubEntryThread(id, entityId)
     local entry = GetClubEntry(id, entityId)
     if not entry then return end
-    if not CanEnterClub(id) and not IsYeeted then
+    if not CanEnterClub(id) and not IsYeeted and not PlayerHasClubJobAccess(id) then
         local ped = PlayerPedId()
         local pcoords = GetEntityCoords(ped)
         local doorCoords = entry.bouncer.coords + vector3(0.0, 0.0, 1.0)

@@ -3,7 +3,7 @@
 
 ['beer'] = {
     ['name'] = 'beer',
-    ['label'] = 'aa a',
+    ['label'] = 'Beer',
     ['weight'] = 200,
     ['type'] = 'item',
     ['image'] = 'drink.png',
@@ -11,5 +11,5 @@
     ['useable'] = true,
     ['shouldClose'] = true,
     ['combinable'] = nil,
-    ['description'] = 'aa a from the bar.'
+    ['description'] = 'Beer from the bar.'
 },

@@ -28,21 +28,43 @@ function MatchDrinkToMenuName(flavorWeights)
     end
     if tasteWeight < 0.3 then return nil end
 
+    -- Balance tolerance: each flavor can deviate this much from the ideal equal share (1/n)
+    -- e.g., for 3 flavors ideal is 33% each; with 0.15 tolerance, 18%-48% each is acceptable
+    local balanceTolerance = 0.15
+
     for _, entry in ipairs(CurrentStationMenu) do
         if entry.flavors and #entry.flavors > 0 then
             local entryAlcohol = entry.alcoholPct or 0
             if math.abs(submittedAlcoholPct - entryAlcohol) <= tolerance then
+                local numFlavors = #entry.flavors
                 local allPresent = true
                 local requiredWeight = 0
+                local flavorRatios = {}
                 for _, flavorKey in ipairs(entry.flavors) do
                     local w = submittedTaste[flavorKey] or 0
                     if w < 0.01 then allPresent = false; break end
                     requiredWeight = requiredWeight + w
+                    flavorRatios[#flavorRatios + 1] = w
                 end
                 if allPresent then
-                    local threshold = #entry.flavors == 1 and 0.85 or 0.70
-                    if (requiredWeight / tasteWeight) >= threshold then
-                        return entry.name
+                    -- Check that required flavors dominate (no big extra flavors)
+                    local dominanceThreshold = numFlavors == 1 and 0.85 or 0.70
+                    if (requiredWeight / tasteWeight) >= dominanceThreshold then
+                        -- Check balance: each flavor should be close to 1/numFlavors of requiredWeight
+                        local balanced = true
+                        if numFlavors > 1 then
+                            local idealShare = 1.0 / numFlavors
+                            for _, w in ipairs(flavorRatios) do
+                                local share = w / requiredWeight
+                                if math.abs(share - idealShare) > balanceTolerance then
+                                    balanced = false
+                                    break
+                                end
+                            end
+                        end
+                        if balanced then
+                            return entry.name
+                        end
                     end
                 end
             end
@@ -1088,7 +1110,7 @@ function CreateStationInteraction(station)
     end
     
     -- Create coaster
-    CreateInteractiveEntity("coaster", coords + (interaction.rightVector * -0.15), heading, {})
+    CreateInteractiveEntity("coaster", coords + (interaction.rightVector * -0.2), heading, {})
     
     -- Create drink
     CreateInteractiveEntity("drink", coords + (interaction.rightVector * -0.15), heading, {
@@ -1110,30 +1132,57 @@ function CreateStationInteraction(station)
         display = {
             title = _L("bartender_cash_register"),
             hiddenHover = true,
+            itemSize = 0.04,
             rows = {
                 {type = "text", label = _L("bartender_start_stop_orders"), color = "secondary"}
             }
         },
     })
     
-    -- Create bottles for each flavor
-    local bottleOffset = 0
-    for key, flavor in pairs(Config.Bartender.flavors) do
-        bottleOffset = bottleOffset + 1
-        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * (0.85)) + (interaction.rightVector * (-0.1 * bottleOffset)), heading, {
-            color = flavor.color,
-            flavorKey = key,
+    -- Build sorted flavor key list for scroll cycling
+    local flavorKeys = {}
+    for key, _ in pairs(Config.Bartender.flavors) do
+        flavorKeys[#flavorKeys + 1] = key
+    end
+    table.sort(flavorKeys)
+
+    -- Create single flavor bottle (scroll to cycle flavors)
+    local firstKey = flavorKeys[1]
+    local firstFlavor = firstKey and Config.Bartender.flavors[firstKey]
+    if firstFlavor then
+        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * 0.45), heading, {
+            color = firstFlavor.color,
+            flavorKey = firstKey,
+            flavorIndex = 1,
+            flavorKeys = flavorKeys,
             progress = 1.0,
+            display = {
+                title = firstFlavor.label,
+                secondaryTitle = "",
+                itemSize = 0.04,
+                minScale = 0.0,
+                maxScale = 0.5,
+                rows = {
+                    {type = "text", label = _L("bartender_scroll_flavor"), center = true}
+                }
+            },
         })
     end
 
     -- Create alcohol bottle
     if Config.Bartender.alcoholBottle then
-        bottleOffset = bottleOffset + 1
-        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * (0.85)) + (interaction.rightVector * (-0.1 * bottleOffset)), heading, {
+        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * 0.35), heading, {
             color = Config.Bartender.alcoholBottle.color,
             flavorKey = Config.Bartender.alcoholBottle.key,
             progress = 1.0,
+            display = {
+                title = Config.Bartender.alcoholBottle.label,
+                secondaryTitle = "",
+                itemSize = 0.04,
+                minScale = 0.0,
+                maxScale = 0.5,
+                rows = {}
+            },
         })
     end
 end
@@ -1369,27 +1418,67 @@ CreateThread(function()
             return bottle, {
                 color = params.color,
                 flavorKey = params.flavorKey,
+                flavorKeys = params.flavorKeys,
+                flavorIndex = params.flavorIndex,
                 progress = params.progress,
                 heightOffset = 0.25,
             }
         end,
         entityThread = function(entity, data)
+            local currentEntity = INT_ENTITIES[entity]
             local radius = 0.08
             local maxHeight = 0.1575
             local surfaceHeight = 0.01
             local alpha = 128
-            local height = INT_ENTITIES[entity].progress * maxHeight
+            local height = currentEntity.progress * maxHeight
             local rotation = GetEntityRotation(entity)
             local rx, ry, rz = rotation.x, rotation.y, rotation.z
             local forwardVector, rightVector, upVector, position = GetEntityMatrix(entity)
             local renderCoords = position + (upVector * surfaceHeight)
             local surfaceCoords = renderCoords + (upVector * height)
-            local color = INT_ENTITIES[entity].color
-            if color and INT_ENTITIES[entity].progress > 0.0 then
+            local color = currentEntity.color
+            if color and currentEntity.progress > 0.0 then
                 DrawMarker(1, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 90.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(28, renderCoords.x, renderCoords.y, renderCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(1, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius, radius, height, color[1], color[2], color[3], alpha, false, false, 2)
                 DrawMarker(28, surfaceCoords.x, surfaceCoords.y, surfaceCoords.z, upVector.x, upVector.y, upVector.z, 270.0, -ry, rz, radius * 0.5, radius * 0.5, 0.001, color[1], color[2], color[3], alpha, false, false, 2)
+            end
+
+            -- Scroll to cycle flavors (only when hovering over this bottle and not holding it)
+            if currentEntity.flavorKeys then
+                if SCROLL_INPUT ~= 0 then
+                    debugPrint(("[Bottle] SCROLL_INPUT=%d HOVERED=%s entity=%s match=%s CURRENT=%s"):format(
+                        SCROLL_INPUT, tostring(HOVERED_ENTITY), tostring(entity), tostring(HOVERED_ENTITY == entity), tostring(CURRENT_ENTITY)
+                    ))
+                end
+            end
+            if currentEntity.flavorKeys and HOVERED_ENTITY == entity and not CURRENT_ENTITY and SCROLL_INPUT ~= 0 then
+                local idx = currentEntity.flavorIndex or 1
+                local keys = currentEntity.flavorKeys
+                if SCROLL_INPUT == -1 then
+                    idx = idx - 1
+                    if idx < 1 then idx = #keys end
+                else
+                    idx = idx + 1
+                    if idx > #keys then idx = 1 end
+                end
+                local newKey = keys[idx]
+                local newFlavor = Config.Bartender.flavors[newKey]
+                if newFlavor then
+                    currentEntity.flavorIndex = idx
+                    currentEntity.flavorKey = newKey
+                    currentEntity.color = newFlavor.color
+                    UpdateInteractiveEntityDisplay(entity, {
+                        title = newFlavor.label,
+                        secondaryTitle = "",
+                        itemSize = 0.04,
+                        minScale = 0.0,
+                        maxScale = 0.5,
+                        rows = {
+                            {type = "text", label = _L("bartender_scroll_flavor"), center = true}
+                        }
+                    })
+                end
             end
         end,
         selectedThread = function(entity, data)
@@ -1879,7 +1968,7 @@ RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavors, alcoho
                 
                 -- Drink while E is held - continuous smooth draining
                 local drinkStartTime = GetGameTimer()
-                local drinkDuration = 20000 -- 20 seconds to fully drain (100% to 0%)
+                local drinkDuration = 1000 -- 1 second to fully drain (testing)
                 local lastProgressUpdate = GetGameTimer()
                 local lastServerSync = GetGameTimer()
                 local initialProgress = equippedDrinkRef.progress
@@ -1934,6 +2023,7 @@ RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavors, alcoho
                     amountConsumed = initialProgress - equippedDrinkRef.progress
                 end
                 if amountConsumed > 0.0 then
+                    debugPrint(("[Drinking] Consumed: " .. tostring(amountConsumed) .. " alcoholPct: " .. tostring(equippedDrinkRef.alcoholPct)))
                     TriggerServerEvent("pickle_clubs:drinkConsumed", amountConsumed, equippedDrinkRef.alcoholPct)
                 end
                 

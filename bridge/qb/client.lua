@@ -89,31 +89,31 @@ local function GetDrunkLevel()
     end
 end
 
+-- Smoothly scale intensity from 0.0 to 1.0 based on alcohol level
+local function GetDrunkIntensity()
+    local maxLevel = Config.DrunkEffects.maxAlcoholLevel or 0.50
+    return math.min(1.0, CurrentAlcoholLevel / math.max(0.01, maxLevel))
+end
+
 -- Function to apply visual effects
 local function ApplyVisualEffects(level)
-    if not Config.DrunkEffects or not Config.DrunkEffects.enabled or not Config.DrunkEffects.visualEffects then 
+    if not Config.DrunkEffects or not Config.DrunkEffects.enabled or not Config.DrunkEffects.visualEffects then
         ClearTimecycleModifier()
         ClearExtraTimecycleModifier()
-        return 
+        return
     end
-    
+
     local ped = PlayerPedId()
-    
+
     if CurrentAlcoholLevel > 0.0 then
-        -- Calculate intensity based on alcohol level (0.0 to 1.0+)
-        -- Map alcohol level to intensity, capping at 1.0
-        local maxLevel = Config.DrunkEffects.thresholds.extreme
-        local actualIntensity = math.min(1.0, CurrentAlcoholLevel / math.max(0.01, maxLevel))
-        
-        -- Apply timecycle modifier (drug_wobbly is the standard drunk effect)
+        local intensity = GetDrunkIntensity()
+
         SetTimecycleModifier("drug_wobbly")
-        SetTimecycleModifierStrength(actualIntensity)
-        
-        -- Enable ped motion blur and drunk state
+        SetTimecycleModifierStrength(intensity)
+
         SetPedMotionBlur(ped, true)
         SetPedIsDrunk(ped, true)
     else
-        -- Cleanup when no alcohol
         ClearTimecycleModifier()
         ClearExtraTimecycleModifier()
         SetPedMotionBlur(ped, false)
@@ -123,20 +123,14 @@ end
 
 -- Function to apply camera shake
 local function ApplyCameraShake(level)
-    if not Config.DrunkEffects or not Config.DrunkEffects.enabled or not Config.DrunkEffects.cameraShake then 
+    if not Config.DrunkEffects or not Config.DrunkEffects.enabled or not Config.DrunkEffects.cameraShake then
         StopGameplayCamShaking(true)
-        return 
+        return
     end
-    
+
     if CurrentAlcoholLevel > 0.0 then
-        -- Calculate intensity based on alcohol level (0.0 to 1.0+)
-        -- Map alcohol level to intensity, capping at 1.0
-        local maxLevel = Config.DrunkEffects.thresholds.extreme
-        local actualIntensity = math.min(1.0, CurrentAlcoholLevel / math.max(0.01, maxLevel))
-        
-        -- Continuously apply shake (needs to be called every frame)
-        -- Using DRUNK_SHAKE as shown in the example
-        ShakeGameplayCam("DRUNK_SHAKE", actualIntensity)
+        local intensity = GetDrunkIntensity()
+        ShakeGameplayCam("DRUNK_SHAKE", intensity)
     else
         StopGameplayCamShaking(true)
     end
@@ -208,8 +202,8 @@ local function StartDrunkEffectsThread()
             -- Debug output (can be removed later)
             if Config.Debug and Config.DrunkEffects.debug then
                 if math.random(1, 300) == 1 then -- Print every ~5 seconds
-                    print(string.format("[Drunk Effects] Level: %s, Alcohol: %.4f, Intensity: %.2f", 
-                        level, CurrentAlcoholLevel, Config.DrunkEffects.visualIntensity[level] or 0))
+                    print(string.format("[Drunk Effects] Level: %s, Alcohol: %.4f, Intensity: %.2f",
+                        level, CurrentAlcoholLevel, GetDrunkIntensity()))
                 end
             end
         end
@@ -285,26 +279,24 @@ AddEventHandler('onResourceStop', function(resourceName)
 end)
 
 RegisterNetEvent("pickle_clubs:addAlcohol", function(amount)
-    local progress = amount / Config.Drinks.alcoholPerDrink
-    
-    -- Add to current alcohol level
+    -- amount is now the raw alcohol value (e.g. 0.05 for a full drink at 5%)
     if Config.DrunkEffects and Config.DrunkEffects.enabled then
-        CurrentAlcoholLevel = CurrentAlcoholLevel + progress
-        
+        CurrentAlcoholLevel = CurrentAlcoholLevel + amount
+
         -- Start effects thread immediately if not already running
         if CurrentAlcoholLevel > 0.0 and not IsDrunkEffectsActive then
             IsDrunkEffectsActive = true
             StartDrunkEffectsThread()
         end
-        
+
         -- Debug output
         if Config.Debug and Config.DrunkEffects.debug then
-            print(string.format("[Drunk Effects] Added alcohol: %.4f, Total: %.4f", progress, CurrentAlcoholLevel))
+            print(string.format("[Drunk Effects] Added alcohol: %.4f, Total: %.4f", amount, CurrentAlcoholLevel))
         end
     end
-    
+
     -- Evidence system (existing functionality)
-    if progress < 0.5 then
+    if amount < 0.5 then
         TriggerEvent('evidence:client:SetStatus', 'alcohol', 600)
     else
         TriggerEvent('evidence:client:SetStatus', 'heavyalcohol', 600)

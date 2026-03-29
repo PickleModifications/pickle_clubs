@@ -22,6 +22,13 @@ Config.TargetIcons = {
     bartender = "fas fa-cocktail",
 }
 
+-- Jobs that bypass club entry/bouncer checks regardless of club job assignments.
+-- Format: { jobName = minimumRank }  (0 = any rank)
+Config.BypassJobs = {
+    ["police"] = 0,
+    -- ["ambulance"] = 0,
+}
+
 -- Society entity: model used for placement/management gizmo (optional prop at interaction point)
 Config.Society = {
     model = `prop_atm_01`, -- e.g. prop_atm_01, vw_prop_casino_till
@@ -44,10 +51,14 @@ Config.Bartender = {
     -- Flavors are key-value pairs; adding/removing a key never shifts other references.
     -- Alcohol strength is set per-drink (the alcohol% field) — it is not a flavor.
     flavors = {
-        ["strawberry"] = { label = "Strawberry", color = {255, 0, 0} },
-        ["lime"]       = { label = "Lime",       color = {0, 255, 0} },
-        ["blueberry"]  = { label = "Blueberry",  color = {50, 50, 255} },
-        ["banana"]     = { label = "Banana",     color = {255, 255, 0} },
+        ["orange_juice"]   = { label = "Orange Juice",   color = {255, 165, 0} },
+        ["cranberry"]      = { label = "Cranberry",      color = {180, 20, 40} },
+        ["lime_juice"]     = { label = "Lime Juice",     color = {50, 205, 50} },
+        ["cola"]           = { label = "Cola",           color = {60, 30, 10} },
+        ["tonic"]          = { label = "Tonic Water",    color = {220, 240, 255} },
+        ["grenadine"]      = { label = "Grenadine",      color = {200, 30, 60} },
+        ["pineapple"]      = { label = "Pineapple Juice",color = {255, 215, 0} },
+        ["sour_mix"]       = { label = "Sour Mix",       color = {230, 230, 100} },
     },
     alcoholBottle = {
         label = "Alcohol",
@@ -98,7 +109,7 @@ Config.Bartender = {
 }
 
 Config.Drinks = {
-    alcoholPerDrink = 1000000,
+    alcoholPerDrink = 100, -- Scale factor for alcohol system. One full drink at 5% alcohol adds 0.05 to drunk level.
 }
 
 Config.DrunkEffects = {
@@ -109,35 +120,22 @@ Config.DrunkEffects = {
     debug = true, -- Enable debug prints for drunk effects
     
     -- Alcohol decay settings
-    decayRate = 0.008, -- Amount of alcohol removed per second (as proportion of alcoholPerDrink)
-    -- With decayRate 0.008: A full drink (1.0) takes ~2.15 minutes to wear off completely
-    -- Adjust this value to make alcohol wear off faster (higher) or slower (lower)
+    decayRate = 0.002, -- Amount of alcohol removed per second. Lower = effects last longer.
+    -- With decayRate 0.002: moderate drunk (0.25) takes ~2 minutes to wear off
     decayInterval = 1000, -- How often to decay alcohol (milliseconds)
     
-    -- Effect thresholds (as proportion of alcoholPerDrink, 0.0 to 1.0+)
-    -- Lower thresholds mean effects start sooner
+    -- Effect thresholds (alcohol level values)
+    -- A 5% beer adds 0.05 per full drink, so 2 beers = 0.10, 4 beers = 0.20
     thresholds = {
-        light = 0.05, -- Light effects start (very low threshold)
-        moderate = 0.25, -- Moderate effects start
-        heavy = 0.50, -- Heavy effects start
-        extreme = 0.75, -- Extreme effects start
+        light = 0.03, -- ~1 beer
+        moderate = 0.10, -- ~2 beers
+        heavy = 0.20, -- ~4 beers
+        extreme = 0.35, -- ~7 beers
     },
-    
-    -- Visual effect intensities (0.0 to 1.0)
-    visualIntensity = {
-        light = 0.15,
-        moderate = 0.35,
-        heavy = 0.55,
-        extreme = 0.75,
-    },
-    
-    -- Camera shake intensities
-    shakeIntensity = {
-        light = 0.15,
-        moderate = 0.35,
-        heavy = 0.55,
-        extreme = 0.75,
-    },
+
+    -- Max alcohol level for intensity scaling (at this level, effects are at 100%)
+    -- Formula: maxBeers * (alcoholPct / 100), e.g. 6 beers at 5% = 6 * 0.05 = 0.30
+    maxAlcoholLevel = 0.30, -- ~6 beers at 5%
     
     -- Walk cycle movement clipsets (GTA V movement styles)
     walkCycles = {

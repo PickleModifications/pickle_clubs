@@ -14,6 +14,7 @@ Language["en"] = {
     bartender_fill_drink_flavors = "Fill the drink with flavors.",
     bartender_drink = "Drink",
     bartender_empty = "Empty",
+    bartender_scroll_flavor = "Scroll to change flavor",
     bartender_cash_register = "Cash Register",
     bartender_start_stop_orders = "Start / Stop Orders",
     bartender_start_service = "Start Service",
