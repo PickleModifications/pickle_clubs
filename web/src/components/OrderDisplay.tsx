@@ -105,9 +105,11 @@ export const OrderDisplay = () => {
         )}
 
         {/* Timer */}
-        <div className="text-sm text-muted-foreground border-t border-border pt-2">
-          {timeRemaining !== undefined ? formatTime(timeRemaining) : "00:00"} remaining
-        </div>
+        {timeRemaining !== undefined && (
+          <div className="text-sm text-muted-foreground border-t border-border pt-2">
+            {formatTime(timeRemaining)} remaining
+          </div>
+        )}
       </div>
     </div>
   );

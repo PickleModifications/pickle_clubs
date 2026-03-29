@@ -146,10 +146,11 @@ function GetClubPass(source, id)
     return ClubPasses[id][source]
 end
 
-function SetClubPass(source, id, bool)
+-- passType: true = standard, "vip" = VIP pass, false/nil = revoke
+function SetClubPass(source, id, passType)
     if not ClubPasses[id] then ClubPasses[id] = {} end
-    ClubPasses[id][source] = bool
-    if bool then
+    ClubPasses[id][source] = passType
+    if passType then
         ShowNotification(source, _L("club_entry_welcome"))
     else
         ShowNotification(source, _L("club_entry_exit"))
@@ -164,12 +165,49 @@ function GetAnyClubEntry(id)
     return nil, nil
 end
 
-lib.callback.register("pickle_clubs:payEntry", function(source, id, entityId)
-    local entry = GetClubEntry(id, entityId)
-    if not entry then return end
-    local entryResult = true
-    SetClubPass(source, id, entryResult)
-    return entryResult
+-- Get club's primary job name for society deposits
+local function GetClubSocietyName(clubId)
+    local club = Clubs[clubId]
+    if not club or not club.jobs then return nil end
+    for _, j in ipairs(club.jobs) do
+        if j.primary and type(j.name) == "string" and j.name ~= "" then
+            return j.name
+        end
+    end
+    return nil
+end
+
+lib.callback.register("pickle_clubs:payEntry", function(source, id, passType)
+    local club = Clubs[id]
+    local es = club and club.entry_settings
+    local price
+    if passType == "vip" then
+        price = (es and es.vipPrice) or (Config.ClubEntry and Config.ClubEntry.vipPrice) or 5000
+    else
+        price = (es and es.entryPrice) or (Config.ClubEntry and Config.ClubEntry.defaultPrice) or 1000
+    end
+    local cash = (GetMoney and GetMoney(source, "money")) or 0
+    if cash < price then
+        return false, "Sorry, you don't have enough money for that."
+    end
+    RemoveMoney(source, price, "money")
+    -- Deposit to society
+    local societyName = GetClubSocietyName(id)
+    if societyName and AddSocietyMoney then
+        AddSocietyMoney(societyName, price)
+    end
+    SetClubPass(source, id, passType == "vip" and "vip" or true)
+    return true
+end)
+
+lib.callback.register("pickle_clubs:getEntryPrices", function(source, clubId)
+    local club = Clubs[clubId]
+    local es = club and club.entry_settings
+    return {
+        entry = (es and es.entryPrice) or (Config.ClubEntry and Config.ClubEntry.defaultPrice) or 1000,
+        vip = (es and es.vipPrice) or (Config.ClubEntry and Config.ClubEntry.vipPrice) or 5000,
+        vipEnabled = Config.ClubEntry and Config.ClubEntry.vipEnabled ~= false,
+    }
 end)
 
 CreateThread(function()

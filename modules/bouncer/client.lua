@@ -127,7 +127,6 @@ function UnrenderBouncer(id, entityId)
         BouncerInteractions[id][entityId] = nil
     end
     Bouncers[id][entityId] = nil
-    print("Unregistered Bouncer: " .. entityId .. " for club: " .. id)
 end
 
 function GetBouncer(id, entityId)
@@ -139,35 +138,26 @@ function PlayerHasClubJobAccess(clubId)
     -- Check bypass jobs first (e.g. police can enter any club)
     if Config.BypassJobs and next(Config.BypassJobs) then
         if CanAccessGroup(Config.BypassJobs) then
-            debugPrint("[Bouncer] Bypass job access granted for clubId: " .. tostring(clubId))
             return true
         end
     end
     -- Check club-specific jobs
     local club = Clubs[clubId]
-    if not club or not club.jobs then
-        debugPrint("[Bouncer] No club or jobs for clubId: " .. tostring(clubId))
-        return false
-    end
+    if not club or not club.jobs then return false end
     local jobAccess = {}
     for _, j in ipairs(club.jobs) do
         if j.name and j.name ~= "" then
-            jobAccess[j.name] = 0 -- grade 0 = any grade level
+            jobAccess[j.name] = 0
         end
     end
-    if not next(jobAccess) then
-        debugPrint("[Bouncer] No valid job names found for club")
-        return false
-    end
-    local hasAccess = CanAccessGroup(jobAccess)
-    debugPrint("[Bouncer] Job access check: " .. tostring(hasAccess) .. " for clubId: " .. tostring(clubId))
-    return hasAccess
+    if not next(jobAccess) then return false end
+    return CanAccessGroup(jobAccess)
 end
 
 function BouncerThread(id, entityId)
     local progressPerTick = 1
     local data = GetBouncer(id, entityId)
-    if CanEnterClub(id) or PLAYING_BOUNCER_SCENE or PlayerHasClubJobAccess(id) then return end
+    if CanEnterClub(id) or PLAYING_BOUNCER_SCENE or PlayerHasClubJobAccess(id) or IsBouncerImmune(GetPlayerServerId(PlayerId())) then return end
     if not data then return end
     if not ClosestBouncer or ClosestBouncer.clubId ~= id or ClosestBouncer.entityId ~= entityId then
         ClosestBouncer = {
@@ -261,14 +251,12 @@ CreateThread(function()
         description = "This is the bouncer entity type.",
         onRender = function(id, entityId)
             RenderBouncer(id, entityId)
-            print("Registered Bouncer: " .. entityId .. " for club: " .. id)
         end,
         onUnrender = function(id, entityId)
             if CurrentClub and CurrentClub == id then
                 CurrentClub = nil
             end
             UnrenderBouncer(id, entityId)
-            print("Unregistered Bouncer: " .. entityId .. " for club: " .. id)
         end,
     })
     while true do
@@ -296,3 +284,235 @@ CreateThread(function()
         Wait(wait)
     end
 end)
+
+-- =====================
+-- BOUNCER ACTIONS (F6)
+-- =====================
+
+local EscortedPlayer = nil -- { serverId, ped }
+local EscortImmunePlayers = {} -- serverId -> true (immune from NPC bouncer detection)
+local SearchPanelOpen = false
+
+-- Check if a player is immune from NPC bouncer detection
+function IsBouncerImmune(serverId)
+    return EscortImmunePlayers[serverId] == true
+end
+
+-- Get the closest player within range
+local function GetClosestPlayer(range)
+    local myPed = PlayerPedId()
+    local myCoords = GetEntityCoords(myPed)
+    local closestPlayer = nil
+    local closestDist = range or 3.0
+    for _, playerId in ipairs(GetActivePlayers()) do
+        if playerId ~= PlayerId() then
+            local targetPed = GetPlayerPed(playerId)
+            if targetPed and DoesEntityExist(targetPed) then
+                local targetCoords = GetEntityCoords(targetPed)
+                local dist = #(myCoords - targetCoords)
+                if dist < closestDist then
+                    closestDist = dist
+                    closestPlayer = { playerId = playerId, serverId = GetPlayerServerId(playerId), ped = targetPed }
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+-- Check if the local player is a bouncer at any club
+local function IsPlayerBouncer()
+    for clubId, _ in pairs(Clubs) do
+        if PlayerHasClubJobAccess(clubId) then
+            return true, clubId
+        end
+    end
+    return false
+end
+
+-- ===== ESCORT SYSTEM =====
+
+local function StartEscort(target)
+    if EscortedPlayer then return end
+    EscortedPlayer = target
+    EscortImmunePlayers[target.serverId] = true
+    local myServerId = GetPlayerServerId(PlayerId())
+    TriggerServerEvent("pickle_clubs:startEscort", target.serverId, myServerId)
+    ShowNotification(_L("bouncer_escort_started"))
+
+    CreateThread(function()
+        while EscortedPlayer and EscortedPlayer.serverId == target.serverId do
+            if IsControlJustPressed(0, 38) then -- E key
+                local myPed = PlayerPedId()
+                local animDict = "melee@thrown@streamed_core"
+                RequestAnimDict(animDict)
+                while not HasAnimDictLoaded(animDict) do Wait(0) end
+                TaskPlayAnim(myPed, animDict, "plyr_takedown_front", -8.0, 8.0, -1, 49, 0, false, false, false)
+                Wait(200)
+                SetTimeout(400, function()
+                    ClearPedTasks(myPed)
+                end)
+                local forward = GetEntityForwardVector(myPed)
+                TriggerServerEvent("pickle_clubs:flingEscort", target.serverId, forward.x, forward.y)
+                TriggerServerEvent("pickle_clubs:revokeAllPasses", target.serverId)
+                local clearedId = target.serverId
+                SetTimeout(3000, function()
+                    EscortImmunePlayers[clearedId] = nil
+                end)
+                EscortedPlayer = nil
+                ShowNotification(_L("bouncer_escort_thrown"))
+                return
+            end
+            Wait(0)
+        end
+    end)
+end
+
+local function StopEscort()
+    if not EscortedPlayer then return end
+    TriggerServerEvent("pickle_clubs:stopEscort", EscortedPlayer.serverId)
+    local clearedId = EscortedPlayer.serverId
+    SetTimeout(3000, function()
+        EscortImmunePlayers[clearedId] = nil
+    end)
+    EscortedPlayer = nil
+end
+
+-- Victim-side: attach self to bouncer with animation
+local BeingEscorted = false
+
+RegisterNetEvent("pickle_clubs:escortAttach", function(bouncerServerId)
+    local myPed = PlayerPedId()
+    local bouncerPed = GetPlayerPed(GetPlayerFromServerId(bouncerServerId))
+    if not bouncerPed or not DoesEntityExist(bouncerPed) then return end
+    ClearPedTasksImmediately(myPed)
+    AttachEntityToEntity(myPed, bouncerPed, GetPedBoneIndex(bouncerPed, 57005), 0.25, 0.0, 0.0, 0.0, -90.0, -45.0, false, false, false, true, 2, true)
+    local animDict = "nm"
+    RequestAnimDict(animDict)
+    while not HasAnimDictLoaded(animDict) do Wait(0) end
+    TaskPlayAnim(myPed, animDict, "firemans_carry", 8.0, -8.0, -1, 33, 0, false, false, false)
+    BeingEscorted = true
+    CreateThread(function()
+        while BeingEscorted do
+            local ped = PlayerPedId()
+            if not IsEntityPlayingAnim(ped, animDict, "firemans_carry", 3) then
+                TaskPlayAnim(ped, animDict, "firemans_carry", 8.0, -8.0, -1, 33, 0, false, false, false)
+            end
+            Wait(200)
+        end
+    end)
+end)
+
+-- Victim-side: detach and fling (same physics as club_entry door rejection)
+RegisterNetEvent("pickle_clubs:escortFling", function(forwardX, forwardY)
+    BeingEscorted = false
+    local myPed = PlayerPedId()
+    ClearPedTasks(myPed)
+    DetachEntity(myPed, false, false)
+    local force = 15.0
+    SetEntityVelocity(myPed, forwardX * force, forwardY * force, 3.0)
+    SetTimeout(100, function()
+        SetPedToRagdoll(myPed, 3000, 3000, 0, false, false, false)
+    end)
+end)
+
+-- Victim-side: detach (release without fling)
+RegisterNetEvent("pickle_clubs:escortDetach", function()
+    BeingEscorted = false
+    local myPed = PlayerPedId()
+    ClearPedTasks(myPed)
+    DetachEntity(myPed, true, true)
+end)
+
+-- ===== SEARCH SYSTEM =====
+
+local function SearchPlayer(target)
+    if SearchPanelOpen then return end
+    SearchPanelOpen = true
+    SetNuiFocus(true, true)
+    SetNuiFocusKeepInput(false)
+    lib.callback("pickle_clubs:getPlayerInventory", false, function(items, charName)
+        if not SearchPanelOpen then return end
+        SendNUIMessage({
+            type = "openSearchPanel",
+            data = {
+                playerName = charName or ("Player " .. target.serverId),
+                items = items or {},
+                imageDirectory = Config.ImageDirectory or "nui://ox_inventory/web/images/",
+                imageExtension = Config.ImageExtension or "png",
+            },
+        })
+    end, target.serverId)
+end
+
+function CloseSearchPanel()
+    SearchPanelOpen = false
+    SetNuiFocus(false, false)
+    SendNUIMessage({ type = "closeSearchPanel" })
+end
+
+RegisterNUICallback("closeSearchPanel", function(_, cb)
+    CloseSearchPanel()
+    cb("ok")
+end)
+
+-- ===== F6 MENU =====
+
+local function OpenBouncerActionsMenu()
+    local isBouncer, clubId = IsPlayerBouncer()
+    if not isBouncer then return end
+
+    local options = {}
+
+    if EscortedPlayer then
+        table.insert(options, {
+            title = _L("bouncer_release"),
+            description = _L("bouncer_release_desc"),
+            icon = "fas fa-hand-paper",
+            onSelect = function()
+                StopEscort()
+                ShowNotification(_L("bouncer_escort_released"))
+            end,
+        })
+    else
+        table.insert(options, {
+            title = _L("bouncer_escort"),
+            description = _L("bouncer_escort_desc"),
+            icon = "fas fa-walking",
+            onSelect = function()
+                local target = GetClosestPlayer(3.0)
+                if not target then
+                    ShowNotification(_L("bouncer_no_player"))
+                    return
+                end
+                StartEscort(target)
+            end,
+        })
+    end
+
+    table.insert(options, {
+        title = _L("bouncer_search"),
+        description = _L("bouncer_search_desc"),
+        icon = "fas fa-search",
+        onSelect = function()
+            local target = GetClosestPlayer(3.0)
+            if not target then
+                ShowNotification(_L("bouncer_no_player"))
+                return
+            end
+            SearchPlayer(target)
+        end,
+    })
+
+    lib.registerContext({
+        id = "bouncer_actions",
+        title = _L("bouncer_actions_title"),
+        options = options,
+    })
+    lib.showContext("bouncer_actions")
+end
+
+RegisterCommand("+bouncer_actions", function()
+    OpenBouncerActionsMenu()
+end, false)
+RegisterKeyMapping("+bouncer_actions", "Bouncer Actions", "keyboard", "F6")

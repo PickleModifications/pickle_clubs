@@ -124,7 +124,6 @@ function UnrenderClubEntry(id, entityId)
         ClubEntryInteractions[id][entityId] = nil
     end
     ClubEntries[id][entityId] = nil
-    print("Unregistered Club Entry: " .. entityId .. " for club: " .. id)
 end
 
 function GetClubEntry(id, entityId)
@@ -187,47 +186,83 @@ function RefreshCEL(id, entityId)
     -- Line positioning logic removed - eject is only for throw-out position
 end
 
+local ClubEntryDialogOpen = false
+local ClubEntryDialogClubId = nil
+
 function PromptCEL(id, entityId)
     local entry = GetClubEntry(id, entityId)
     if not entry then return end
+    if ClubEntryDialogOpen then return end
+
+    local club = Clubs[id]
+    local clubName = club and club.label or ("Club #" .. id)
+
+    -- Camera transition to face the bouncer
     local ped = entry.bouncer.ped
     local pedCoords = GetEntityCoords(ped)
     local forward = GetEntityForwardVector(ped)
     local heading = GetEntityHeading(ped)
-    local coords = pedCoords + (forward * 0.5)
-    StartClubPrompt(coords, heading, {
-        dialog = {
-            speech = "Welcome to the club! It'll cost you $1000 to get in.",
-            options = {
-                {
-                    label = "Freak you man, I'm not paying that shit.",
-                    description = "You will be forcibly escorted out of the club.",
-                    dialog = {
-                        speech = "Sorry, gotta pay up to get in.",
-                    }
-                },
-                {
-                    label = "I'll pay it - gotta get the party started.",
-                    description = "This will deduct $1000 from your bank account.",
-                    dialog = {
-                        speech = "ERROR: No speech selected for this.",
-                        finish = true,
-                        speechSelect = function()
-                            if lib.callback.await("pickle_clubs:payEntry", false, id, entityId) then
-                                return "Thanks for your business! Enjoy the club!"
-                            else
-                                return "Sorry, you don't have enough money."
-                            end
-                        end,
-                        onStart = function()
-                            print("PAY THE MAN!")
-                        end,
-                    }
-                },
-            }
-        }
-    })
+    local camCoords = pedCoords + (forward * 0.5)
+    CreateScriptedCamera()
+    SetCamParams(CurrentCamera, camCoords.x, camCoords.y, camCoords.z + 0.5,
+        0.0, 0.0, heading + 180.0, 90.0,
+        2000, 0, 0, 2
+    )
+
+    lib.callback("pickle_clubs:getEntryPrices", false, function(prices)
+        if not prices then
+            ExitScriptedCamera()
+            return
+        end
+        ClubEntryDialogOpen = true
+        ClubEntryDialogClubId = id
+        SetNuiFocus(true, true)
+        SetNuiFocusKeepInput(false)
+        SendNUIMessage({
+            type = "openClubEntryDialog",
+            data = {
+                clubId = id,
+                clubName = clubName,
+                entryPrice = prices.entry,
+                vipPrice = prices.vip,
+                vipEnabled = prices.vipEnabled,
+                hasPass = ClubPasses[id] == true or ClubPasses[id] == "vip",
+                hasVip = ClubPasses[id] == "vip",
+                speech = _L("club_entry_bouncer_speech"),
+                currency = Config.Currency and Config.Currency.currency or "USD",
+                countryCode = Config.Currency and Config.Currency.countryCode or "en-US",
+            },
+        })
+    end, id)
 end
+
+function CloseClubEntryDialog()
+    ClubEntryDialogOpen = false
+    ClubEntryDialogClubId = nil
+    SetNuiFocus(false, false)
+    ExitScriptedCamera()
+    SendNUIMessage({ type = "closeClubEntryDialog" })
+end
+
+RegisterNUICallback("closeClubEntryDialog", function(_, cb)
+    CloseClubEntryDialog()
+    cb("ok")
+end)
+
+RegisterNUICallback("payClubEntry", function(data, cb)
+    if not data or not data.clubId then cb({ success = false }); return end
+    local passType = data.passType == "vip" and "vip" or "standard"
+    lib.callback("pickle_clubs:payEntry", false, function(success, msg)
+        if success then
+            cb({ success = true })
+            SetTimeout(1500, function()
+                CloseClubEntryDialog()
+            end)
+        else
+            cb({ success = false, message = msg or "Not enough money" })
+        end
+    end, tonumber(data.clubId), passType)
+end)
 
 function CanEnterClub(id)
     return ClubPasses[id]
@@ -255,14 +290,12 @@ CreateThread(function()
         description = "This is the club entry entity type.",
         onRender = function(id, entityId)
             RenderClubEntry(id, entityId)
-            print("Registered Club Entry: " .. entityId .. " for club: " .. id)
         end,
         onUnrender = function(id, entityId)
             if CurrentClub and CurrentClub == id then
                 CurrentClub = nil
             end
             UnrenderClubEntry(id, entityId)
-            print("Unregistered Club Entry: " .. entityId .. " for club: " .. id)
         end,
     })
     while true do

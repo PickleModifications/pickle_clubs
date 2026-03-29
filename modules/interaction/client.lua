@@ -112,7 +112,6 @@ function CreateInteractiveEntity(entType, coords, heading, params)
         entityData[k] = v
     end
     INT_ENTITIES[entity] = entityData
-    print("Created interactive entity: ", entType, json.encode(entityData, {indent = true}))
     return entity
 end
 
@@ -166,25 +165,9 @@ function StartInteraction(coords, heading)
             if not CURRENT_ENTITY then
                 local hit, _, entityHit = GetCursorRaycast(camCoords, camRotation)
                 HOVERED_ENTITY = (hit and entityHit and DoesEntityExist(entityHit) and INT_ENTITIES[entityHit]) and entityHit or nil
-                -- Check multiple scroll control methods
-                local s1 = IsControlJustPressed(1, 15)
-                local s2 = IsControlJustPressed(1, 14)
-                local s3 = IsDisabledControlJustPressed(0, 241)
-                local s4 = IsDisabledControlJustPressed(0, 242)
-                local s5 = IsControlJustPressed(0, 241)
-                local s6 = IsControlJustPressed(0, 242)
-                local s7 = IsControlJustPressed(2, 241)
-                local s8 = IsControlJustPressed(2, 242)
-                if s1 or s2 or s3 or s4 or s5 or s6 or s7 or s8 then
-                    debugPrint(("[Scroll] 1:15=%s 1:14=%s 0:241=%s 0:242=%s 0:241c=%s 0:242c=%s 2:241=%s 2:242=%s hovered=%s"):format(
-                        tostring(s1), tostring(s2), tostring(s3), tostring(s4),
-                        tostring(s5), tostring(s6), tostring(s7), tostring(s8),
-                        tostring(HOVERED_ENTITY)
-                    ))
-                end
-                if s1 or s3 or s5 or s7 then
+                if IsControlJustPressed(1, 15) then
                     SCROLL_INPUT = 1
-                elseif s2 or s4 or s6 or s8 then
+                elseif IsControlJustPressed(1, 14) then
                     SCROLL_INPUT = -1
                 else
                     SCROLL_INPUT = 0
@@ -273,20 +256,22 @@ function StartInteraction(coords, heading)
                     local minScale = v.display.minScale or 0.0
                     local scale = maxScale
                     if v.display.hiddenHover then
-                        -- Use 2D screen distance between cursor and entity for stable scaling
+                        -- Use 2D screen distance between cursor and entity for scaling
                         local cursorX, cursorY = GetNuiCursorPosition()
                         local resX, resY = GetActiveScreenResolution()
                         local normalizedCursorX = cursorX / resX
                         local normalizedCursorY = cursorY / resY
                         local screenDist = math.sqrt((normalizedCursorX - entityScreenX)^2 + (normalizedCursorY - entityScreenY)^2)
-                        local itemSize = v.display.itemSize or 0.08 -- screen-space radius for full scale
-                        if screenDist <= itemSize then
+                        local hoverRadius = v.display.hoverRadius or 0.08
+                        if screenDist <= hoverRadius then
                             scale = maxScale
                         else
-                            scale = lerp(maxScale, 0.0, (screenDist - itemSize) / itemSize)
+                            scale = lerp(maxScale, 0.0, (screenDist - hoverRadius) / hoverRadius)
                         end
                         if scale < minScale then scale = minScale end
                     end
+                    -- Apply itemSize as a base size multiplier (independent of hover scaling)
+                    local itemSize = v.display.itemSize or 1.0
                     SendNUIMessage({
                         type = "updateInteractiveEntityDisplay",
                         data = {
@@ -297,7 +282,7 @@ function StartInteraction(coords, heading)
                             onScreen = onScreen,
                             screenX = entityScreenX,
                             screenY = entityScreenY,
-                            scale = scale,
+                            scale = scale * itemSize,
                         }
                     })
                 end

@@ -29,6 +29,35 @@ Config.BypassJobs = {
     -- ["ambulance"] = 0,
 }
 
+Config.ClubEntry = {
+    defaultPrice = 1000, -- Default entry fee if not set per-club
+    vipPrice = 5000, -- Default VIP pass price if not set per-club
+    vipEnabled = true, -- Allow VIP pass purchases
+}
+
+-- Default drinks added to new clubs. Keys are drink IDs, values match the drink_menu format.
+-- These are also used to generate item install files in __INSTALL/Items/.
+Config.DefaultDrinks = {
+    screwdriver_drink     = { name = "Screwdriver",       flavors = {"orange_juice"},                              alcohol = 8,  price = 50,  item = "screwdriver_drink" },
+    cosmopolitan    = { name = "Cosmopolitan",      flavors = {"cranberry", "lime_juice"},                   alcohol = 15, price = 80,  item = "cosmopolitan" },
+    cuba_libre      = { name = "Cuba Libre",        flavors = {"cola", "lime_juice"},                        alcohol = 10, price = 60,  item = "cuba_libre" },
+    gin_tonic       = { name = "Gin & Tonic",       flavors = {"tonic", "lime_juice"},                       alcohol = 12, price = 70,  item = "gin_tonic" },
+    tequila_sunrise = { name = "Tequila Sunrise",   flavors = {"orange_juice", "grenadine"},                 alcohol = 14, price = 75,  item = "tequila_sunrise" },
+    pina_colada     = { name = "Pina Colada",       flavors = {"pineapple"},                                 alcohol = 10, price = 65,  item = "pina_colada" },
+    whiskey_sour    = { name = "Whiskey Sour",      flavors = {"sour_mix"},                                  alcohol = 20, price = 85,  item = "whiskey_sour" },
+    sea_breeze      = { name = "Sea Breeze",        flavors = {"cranberry", "pineapple"},                    alcohol = 8,  price = 55,  item = "sea_breeze" },
+    bay_breeze      = { name = "Bay Breeze",        flavors = {"cranberry", "pineapple"},                    alcohol = 6,  price = 50,  item = "bay_breeze" },
+    shirley_temple  = { name = "Shirley Temple",    flavors = {"grenadine", "lime_juice"},                   alcohol = 0,  price = 30,  item = "shirley_temple" },
+    arnold_palmer   = { name = "Arnold Palmer",     flavors = {"sour_mix", "tonic"},                         alcohol = 0,  price = 25,  item = "arnold_palmer" },
+    rum_punch       = { name = "Rum Punch",         flavors = {"orange_juice", "pineapple", "grenadine"},    alcohol = 18, price = 90,  item = "rum_punch" },
+    jungle_juice    = { name = "Jungle Juice",      flavors = {"orange_juice", "cranberry", "pineapple"},    alcohol = 12, price = 70,  item = "jungle_juice" },
+    paloma          = { name = "Paloma",            flavors = {"lime_juice", "sour_mix"},                    alcohol = 12, price = 65,  item = "paloma" },
+    jack_coke       = { name = "Jack & Coke",       flavors = {"cola"},                                     alcohol = 15, price = 70,  item = "jack_coke" },
+    vodka_cran      = { name = "Vodka Cranberry",   flavors = {"cranberry"},                                 alcohol = 10, price = 55,  item = "vodka_cran" },
+    mai_tai         = { name = "Mai Tai",           flavors = {"orange_juice", "lime_juice", "sour_mix"},    alcohol = 16, price = 85,  item = "mai_tai" },
+    dark_stormy     = { name = "Dark & Stormy",     flavors = {"cola", "lime_juice"},                        alcohol = 14, price = 65,  item = "dark_stormy" },
+}
+
 -- Society entity: model used for placement/management gizmo (optional prop at interaction point)
 Config.Society = {
     model = `prop_atm_01`, -- e.g. prop_atm_01, vw_prop_casino_till
@@ -82,6 +111,7 @@ Config.Bartender = {
     },
     orderSpawnInterval = 10, -- Time between new orders in seconds
     orderPayment = 50, -- Payment amount for correct order
+    societyCut = 0.30, -- Percentage of sales that goes to the society account (0.0 to 1.0). The rest goes to the bartender.
     playerOrderExpireSeconds = 60, -- Time before player orders expire (default: same as orderTimerDuration)
     playerOrderPayment = 0, -- If > 0, take cash from ordering player; 0 = free drinks
     registerModel = `vw_prop_casino_till`, -- Model used for bartender placement/management gizmo
@@ -148,6 +178,7 @@ Config.DrunkEffects = {
 
 Config.Peds = {
     ["bouncer_1"] = {
+        label = "Default Bouncer",
         model = "s_m_m_bouncer_01",
     },
 }

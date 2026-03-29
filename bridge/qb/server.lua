@@ -27,6 +27,38 @@ function GetPlayerCharacterName(source)
     return xPlayer.PlayerData.charinfo.firstname .. " " .. xPlayer.PlayerData.charinfo.lastname
 end
 
+function GetEmployees(jobName, cb)
+    local employees = {}
+    local players = QBCore.Functions.GetQBPlayers()
+    for _, player in pairs(players) do
+        if player and player.PlayerData and player.PlayerData.job and player.PlayerData.job.name == jobName then
+            employees[#employees + 1] = {
+                source = player.PlayerData.source,
+                name = player.PlayerData.charinfo.firstname .. " " .. player.PlayerData.charinfo.lastname,
+                grade = player.PlayerData.job.grade.level,
+                gradeLabel = player.PlayerData.job.grade.name,
+                online = true,
+            }
+        end
+    end
+    if type(cb) == "function" then cb(employees) end
+    return employees
+end
+
+function GetJobGrades(jobName)
+    local job = QBCore.Shared.Jobs[jobName]
+    if not job or not job.grades then return {} end
+    local grades = {}
+    for level, grade in pairs(job.grades) do
+        grades[#grades + 1] = {
+            level = tonumber(level),
+            label = grade.name or ("Grade " .. level),
+        }
+    end
+    table.sort(grades, function(a, b) return a.level < b.level end)
+    return grades
+end
+
 function CanAccessGroup(source, data)
     if not data then return true end
     local pdata = QBCore.Functions.GetPlayer(tonumber(source)).PlayerData

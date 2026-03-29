@@ -51,6 +51,7 @@ local function SerializeClubsForNui()
             jobs = club.jobs or {},
             entities = entitiesMap,
             drink_menu = NormalizeForNui(club.drink_menu or {}),
+            blip = club.blip,
         }
     end
     return list
@@ -61,6 +62,42 @@ RegisterNUICallback("closeClubManagement", function(_, cb)
     ClubManagementFocus = false
     SetNuiFocusKeepInput(false)
     SetNuiFocus(false, false)
+    cb({ ok = true })
+end)
+
+RegisterNUICallback("getPlayerCoords", function(_, cb)
+    local coords = RunWithReleasedManagementFocus(function()
+        local gizmo = StartGizmoEditor({
+            model = `prop_tennis_ball`,
+            coords = GetEntityCoords(PlayerPedId()),
+            rotation = vector3(0.0, 0.0, 0.0),
+            enableCancel = true,
+        })
+        if not gizmo or not gizmo.position then return nil end
+        return gizmo.position
+    end)
+    if coords then
+        cb({ x = coords.x, y = coords.y, z = coords.z })
+    else
+        cb(nil)
+    end
+end)
+
+RegisterNUICallback("teleportToEntity", function(data, cb)
+    if data and data.clubId and data.entityId then
+        local clubId = tonumber(data.clubId)
+        local club = clubId and Clubs[clubId]
+        if club and club.entities and club.entities[data.entityId] then
+            local entity = club.entities[data.entityId]
+            local coords = (entity.bartender and entity.bartender.coords)
+                or (entity.bouncer and entity.bouncer.coords)
+                or (entity.society and entity.society.coords)
+                or entity.coords
+            if coords then
+                SetEntityCoords(PlayerPedId(), coords.x, coords.y, coords.z, false, false, false, true)
+            end
+        end
+    end
     cb({ ok = true })
 end)
 
@@ -94,14 +131,6 @@ local function BuildEntityPayloadFromUiWithGizmo(clubId, entityType, sourcePaylo
 
     if entityType == "bartender" then
         payload.bartender = payload.bartender or {}
-        payload.bartender.blip = payload.bartender.blip or {
-            name = "Bartending Station",
-            color = 5,
-            sprite = 52,
-            scale = 0.8,
-            visible = true,
-        }
-        if payload.bartender.blip.visible == nil then payload.bartender.blip.visible = true end
         return RunWithReleasedManagementFocus(function()
             return UpdateBartenderPosition(payload, club)
         end)
@@ -147,7 +176,8 @@ RegisterNUICallback("clubManagementAction", function(payload, cb)
             description = data.description or "",
             coords = data.coords or defaultCoords,
             jobs = data.jobs,
-            drink_menu = type(data.drink_menu) == "table" and data.drink_menu or {},
+            drink_menu = type(data.drink_menu) == "table" and next(data.drink_menu) and data.drink_menu or Config.DefaultDrinks or {},
+            blip = data.blip,
         })
     elseif action == "updateClub" then
         TriggerServerEvent("pickle_clubs:updateClub", tonumber(data.clubId), {
@@ -156,6 +186,7 @@ RegisterNUICallback("clubManagementAction", function(payload, cb)
             coords = data.coords,
             jobs = data.jobs,
             drink_menu = data.drink_menu,
+            blip = data.blip,
         })
     elseif action == "deleteClub" then
         TriggerServerEvent("pickle_clubs:deleteClub", tonumber(data.clubId))
@@ -179,9 +210,9 @@ RegisterNUICallback("clubManagementAction", function(payload, cb)
         if club then
             local coords = RunWithReleasedManagementFocus(function()
                 local gizmo = StartGizmoEditor({
-                    model = Config.Bartender.registerModel or `vw_prop_casino_till`,
+                    model = `prop_tennis_ball`,
                     coords = club.coords,
-                    rotation = vector3(0.0, 0.0, GetEntityHeading(PlayerPedId())),
+                    rotation = vector3(0.0, 0.0, 0.0),
                     enableCancel = true,
                 })
                 if not gizmo or not gizmo.position then return nil end
@@ -274,8 +305,32 @@ function ExitScriptedCamera(durationValue)
 end
 
 
+local ClubBlips = {} -- clubId -> blipHandle
+
+local function UpdateClubBlip(id)
+    -- Remove old blip
+    if ClubBlips[id] then
+        RemoveBlip(ClubBlips[id])
+        ClubBlips[id] = nil
+    end
+    local club = Clubs[id]
+    if not club or not club.coords then return end
+    local b = club.blip or {}
+    if b.visible == false then return end
+    local coords = club.coords
+    if not coords then return end
+    ClubBlips[id] = CreateBlip({
+        coords = {coords.x, coords.y, coords.z},
+        sprite = b.sprite or 614,
+        color = b.color or 5,
+        scale = b.scale or 0.8,
+        label = b.name or club.label or ("Club #" .. id),
+    })
+end
+
 function RegisterClub(id, data)
     Clubs[id] = data
+    UpdateClubBlip(id)
     local pcoords = GetEntityCoords(PlayerPedId())
     if #(pcoords - data.coords) < Config.RenderDistance then
         RenderClub(id)
@@ -284,6 +339,10 @@ end
 
 function UnregisterClub(id)
     UnrenderClub(id)
+    if ClubBlips[id] then
+        RemoveBlip(ClubBlips[id])
+        ClubBlips[id] = nil
+    end
     Clubs[id] = nil
 end
 
@@ -1128,7 +1187,7 @@ local function OpenClubManageMenu(clubId)
     lib.showContext(("club_manage_%s"):format(clubId))
 end
 
--- Opens the Club Management NUI (used by /managebar and pickle_clubs:openClubManagement).
+-- Opens the Club Management NUI (used by /clubs and pickle_clubs:openClubManagement).
 function OpenClubManagementNui()
     lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
         if not isAdmin then
@@ -1141,6 +1200,7 @@ function OpenClubManagementNui()
             type = "openClubManagement",
             clubs = SerializeClubsForNui(),
             flavors = Config.Bartender and Config.Bartender.flavors or {},
+            peds = Config.Peds or {},
         })
     end)
 end

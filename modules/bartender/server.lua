@@ -1,18 +1,24 @@
 -- Multi-Station Bartender Server
 -- Bartender entities are stored in Clubs[id].entities[entityId].
 
--- Check if a drink entry has all valid flavors (all flavor keys exist in Config.Bartender.flavors)
-function DrinkHasValidFlavors(entry)
-    if type(entry) ~= "table" or type(entry.flavors) ~= "table" or #entry.flavors == 0 then
-        return false
+-- Get only the valid flavors from a drink entry (strips invalid keys)
+function GetValidFlavors(entry)
+    if type(entry) ~= "table" or type(entry.flavors) ~= "table" then
+        return {}
     end
     local configFlavors = Config.Bartender and Config.Bartender.flavors or {}
+    local valid = {}
     for _, flavorKey in ipairs(entry.flavors) do
-        if not configFlavors[flavorKey] then
-            return false
+        if configFlavors[flavorKey] then
+            valid[#valid + 1] = flavorKey
         end
     end
-    return true
+    return valid
+end
+
+-- Check if a drink entry has at least one valid flavor
+function DrinkHasValidFlavors(entry)
+    return #GetValidFlavors(entry) > 0
 end
 
 -- Per-station runtime data: stationId -> {orderQueue, serviceActive, interactionData, spawnThread, timerThread}
@@ -98,6 +104,30 @@ local function GetClubDrinkMenuForStation(stationId)
     return GetClubDrinkMenu(clubId)
 end
 
+-- Pay society its cut from a sale and return the bartender's share
+local function PaySocietyCut(stationId, totalAmount)
+    local societyCut = Config.Bartender.societyCut or 0
+    if societyCut <= 0 or totalAmount <= 0 then return totalAmount end
+    local clubId = GetClubIdFromStationId(stationId)
+    if not clubId then return totalAmount end
+    local club = Clubs[clubId]
+    if not club then return totalAmount end
+    local jobs = club.jobs or {}
+    local societyName = nil
+    for i = 1, #jobs do
+        if jobs[i].primary and type(jobs[i].name) == "string" and jobs[i].name ~= "" then
+            societyName = jobs[i].name
+            break
+        end
+    end
+    if not societyName or not AddSocietyMoney then return totalAmount end
+    local societyAmount = math.floor(totalAmount * societyCut)
+    if societyAmount > 0 then
+        AddSocietyMoney(societyName, societyAmount)
+    end
+    return totalAmount - societyAmount
+end
+
 local function IsStationControlled(stationId, controlType)
     if not StationControllers[stationId] then return false end
     if controlType then
@@ -134,9 +164,12 @@ local function EnsureStationData(stationId)
             local expiredOrders = {}
             for i = 1, #sd.orderQueue do
                 local order = sd.orderQueue[i]
-                order.timer = order.timer - 1
-                if order.timer <= 0 then
-                    table.insert(expiredOrders, order.id)
+                -- Only count down the front order, and skip player orders (no time limit)
+                if i == 1 and not order.isPlayerOrder then
+                    order.timer = order.timer - 1
+                    if order.timer <= 0 then
+                        table.insert(expiredOrders, order.id)
+                    end
                 end
             end
             for _, orderId in ipairs(expiredOrders) do
@@ -183,28 +216,6 @@ local function ClearStationController(stationId, controlType)
 end
 
 -- Collect all unique drink item names from loaded club menus
-function GenerateAllDrinkItems()
-    local items = {}
-    local seen = {}
-    for _, club in pairs(Clubs or {}) do
-        for _, entry in pairs(club.drink_menu or {}) do
-            if type(entry) == "table" and type(entry.item) == "string" and entry.item ~= "" and not seen[entry.item] and DrinkHasValidFlavors(entry) then
-                seen[entry.item] = true
-                items[#items + 1] = {
-                    name = entry.item,
-                    label = type(entry.name) == "string" and entry.name or entry.item,
-                }
-            end
-        end
-    end
-    return items
-end
-
--- Get list of all drink items (exported)
-function GetAllDrinkItems()
-    return GenerateAllDrinkItems()
-end
-
 -- Calculate forwardVector from heading using trigonometry
 function CalculateForwardVector(heading)
     -- Convert heading (degrees) to radians
@@ -268,7 +279,7 @@ function GenerateDrinkOrder(stationId)
     end
     if #entries == 0 then return nil end
     local chosen = entries[math.random(1, #entries)].entry
-    return chosen.name, chosen.flavors, chosen.alcohol, chosen.item
+    return chosen.name, GetValidFlavors(chosen), chosen.alcohol, chosen.item
 end
 
 function CreateOrder(stationId)
@@ -297,7 +308,6 @@ function SpawnNextOrder(stationId)
     
     local order = CreateOrder(stationId)
     if not order then
-        debugPrint("No drinks defined in club menu for station " .. stationId .. ", skipping NPC order")
         return
     end
     order.stationId = stationId
@@ -361,7 +371,7 @@ function UpdateCurrentOrderDisplay(stationId)
             orderName = currentOrder.drinkName,
             flavors = currentOrder.requiredFlavorKeys,
             alcoholPct = currentOrder.alcoholPct,
-            timeRemaining = currentOrder.timer,
+            timeRemaining = (not currentOrder.isPlayerOrder) and currentOrder.timer or nil,
             active = true,
             isPlayerOrder = currentOrder.isPlayerOrder == true,
         }
@@ -418,6 +428,10 @@ function ExpireOrder(stationId, orderId, skipPlayerExpiredNotify)
     end
     -- Remove from queue
     RemoveOrderFromQueue(stationId, orderId)
+    -- Reset the new front order's timer so the bartender gets a fresh countdown
+    if stationData and #stationData.orderQueue > 0 then
+        stationData.orderQueue[1].timer = Config.Bartender.orderTimerDuration
+    end
     -- Update display
     UpdateCurrentOrderDisplay(stationId)
 end
@@ -482,10 +496,21 @@ function StopBartenderService(stationId)
     end
     
     stationData.serviceActive = false
-    
-    -- Cleanup all orders
+
+    -- Cleanup all orders, refund player orders
     for i = 1, #stationData.orderQueue do
-        TriggerClientEvent("pickle_clubs:deleteOrderNPC", -1, stationId, stationData.orderQueue[i].id)
+        local order = stationData.orderQueue[i]
+        TriggerClientEvent("pickle_clubs:deleteOrderNPC", -1, stationId, order.id)
+        if order.isPlayerOrder and order.playerSource then
+            -- Refund the player
+            local price = order.price or 0
+            if price > 0 and GetPlayerPing(order.playerSource) > 0 then
+                AddMoney(order.playerSource, price, "money")
+            end
+            if GetPlayerPing(order.playerSource) > 0 then
+                ShowNotification(order.playerSource, "Your order has been cancelled and refunded")
+            end
+        end
     end
     stationData.orderQueue = {}
     
@@ -513,7 +538,7 @@ RegisterNetEvent("pickle_clubs:startBartenderService", function(stationId, coord
     
     local serviceStarted, failMessage = StartBartenderService(stationId, coords, heading)
     if serviceStarted then
-        print("Bartender service started by player: " .. source .. " for station: " .. stationId)
+        -- service started
     else
         -- Clear controller if service failed to start
         ClearStationController(stationId, "service")
@@ -526,7 +551,6 @@ RegisterNetEvent("pickle_clubs:stopBartenderService", function(stationId)
     
     if StopBartenderService(stationId) then
         ClearStationController(stationId, "service")
-        print("Bartender service stopped by player: " .. source .. " for station: " .. stationId)
     end
 end)
 
@@ -608,7 +632,6 @@ local function RegisterDrinkItemIfNeeded(itemName)
     if RegisteredDrinkItems[itemName] then return end
     RegisterUsableItem(itemName, function(source, item)
         local metadata = Config.FrameworkSettings.usableItemMetadata(item, item)
-        debugPrint(("[RegisterDrinkItem] item=%s metadata=%s"):format(json.encode(item), json.encode(metadata)))
         local flavors = metadata and metadata.flavors or nil
         local alcoholPct = metadata and metadata.alcoholPct or nil
 
@@ -696,13 +719,14 @@ RegisterNetEvent("pickle_clubs:submitDrink", function(stationId, orderId, flavor
             ExpireOrder(stationId, orderId, true)
             TriggerClientEvent("pickle_clubs:drinkSubmissionResult", source, true, "Order fulfilled", nil)
         else
-            -- NPC order: pay bartender
+            -- NPC order: pay bartender (minus society cut)
             local orderPayment = Config.Bartender.orderPayment
-            AddMoney(source, orderPayment, "money")
+            local bartenderShare = PaySocietyCut(stationId, orderPayment)
+            AddMoney(source, bartenderShare, "money")
             local feedbackMessages = Config.Bartender.orderConversations.correct
             local feedback = feedbackMessages[math.random(1, #feedbackMessages)]
             ExpireOrder(stationId, orderId)
-            TriggerClientEvent("pickle_clubs:drinkSubmissionResult", source, true, feedback, orderPayment)
+            TriggerClientEvent("pickle_clubs:drinkSubmissionResult", source, true, feedback, bartenderShare)
         end
     else
         ShowNotification(source, message)
@@ -731,7 +755,7 @@ lib.callback.register("pickle_clubs:getClubDrinkMenu", function(source, stationI
                 drinkKey = drinkKey,
                 name = entry.name,
                 price = entry.price,
-                flavors = entry.flavors,
+                flavors = GetValidFlavors(entry),
                 alcoholPct = entry.alcohol,
                 item = entry.item,
             }
@@ -745,15 +769,12 @@ lib.callback.register("pickle_clubs:canPlacePlayerOrder", function(source, stati
     if not GetStation(stationId) then
         return false, "Station not found"
     end
-    if not IsStationControlled(stationId, "interaction") then
-        return false, "No bartender at the bar - try again when someone is serving"
-    end
-    local stationData = StationData[stationId]
-    if not stationData then
-        return false, "Station not ready"
-    end
-    if #stationData.orderQueue >= Config.Bartender.maxActiveOrders then
-        return false, "Too many orders, try again later"
+    -- Allow ordering even without a bartender (self-service)
+    if IsStationControlled(stationId, "interaction") then
+        local stationData = StationData[stationId]
+        if stationData and #stationData.orderQueue >= Config.Bartender.maxActiveOrders then
+            return false, "Too many orders, try again later"
+        end
     end
     return true
 end)
@@ -762,19 +783,6 @@ RegisterNetEvent("pickle_clubs:placePlayerOrder", function(stationId, drinkKey)
     local source = source
     if not GetStation(stationId) then
         ShowNotification(source, "Station not found")
-        return
-    end
-    if not IsStationControlled(stationId, "interaction") then
-        ShowNotification(source, "No bartender at the bar - try again when someone is serving")
-        return
-    end
-    local stationData = StationData[stationId]
-    if not stationData then
-        ShowNotification(source, "Station not ready")
-        return
-    end
-    if #stationData.orderQueue >= Config.Bartender.maxActiveOrders then
-        ShowNotification(source, "Too many orders, try again later")
         return
     end
     local menu = GetClubDrinkMenuForStation(stationId)
@@ -787,38 +795,98 @@ RegisterNetEvent("pickle_clubs:placePlayerOrder", function(stationId, drinkKey)
         ShowNotification(source, "Drink is unavailable")
         return
     end
-    local requiredFlavorKeys = menuEntry.flavors
+    local requiredFlavorKeys = GetValidFlavors(menuEntry)
     local drinkName = menuEntry.name
     local price = menuEntry.price
     local alcoholPct = menuEntry.alcohol
-    local item = menuEntry.item
-    if price > 0 then
+    local itemName = menuEntry.item
+
+    -- Charge the player and give society its cut
+    if price and price > 0 then
         local cash = (GetMoney and GetMoney(source, "money")) or 0
         if cash < price then
             ShowNotification(source, "Not enough cash")
             return
         end
         RemoveMoney(source, price, "money")
+        PaySocietyCut(stationId, price)
     end
-    local orderId = GetGameTimer() .. "_" .. math.random(1000, 9999)
-    local timerDuration = Config.Bartender.playerOrderExpireSeconds or Config.Bartender.orderTimerDuration
-    local order = {
-        id = orderId,
-        drinkKey = drinkKey,
-        drinkName = drinkName,
-        requiredFlavorKeys = requiredFlavorKeys,
-        flavors = requiredFlavorKeys,
-        alcoholPct = alcoholPct,
-        item = item,
-        timer = timerDuration,
-        createdAt = GetGameTimer(),
-        stationId = stationId,
-        isPlayerOrder = true,
-        playerSource = source,
-    }
-    table.insert(stationData.orderQueue, order)
-    UpdateCurrentOrderDisplay(stationId)
-    ShowNotification(source, "Order placed: " .. drinkName)
+
+    -- If a bartender is active, queue the order for them to make
+    if IsStationControlled(stationId, "interaction") then
+        local stationData = StationData[stationId]
+        if not stationData then
+            ShowNotification(source, "Station not ready")
+            return
+        end
+        if #stationData.orderQueue >= Config.Bartender.maxActiveOrders then
+            ShowNotification(source, "Too many orders, try again later")
+            return
+        end
+        local orderId = GetGameTimer() .. "_" .. math.random(1000, 9999)
+        local timerDuration = Config.Bartender.playerOrderExpireSeconds or Config.Bartender.orderTimerDuration
+        local order = {
+            id = orderId,
+            drinkKey = drinkKey,
+            drinkName = drinkName,
+            requiredFlavorKeys = requiredFlavorKeys,
+            flavors = requiredFlavorKeys,
+            alcoholPct = alcoholPct,
+            item = itemName,
+            timer = timerDuration,
+            createdAt = GetGameTimer(),
+            stationId = stationId,
+            isPlayerOrder = true,
+            playerSource = source,
+            price = price or 0,
+        }
+        table.insert(stationData.orderQueue, order)
+        UpdateCurrentOrderDisplay(stationId)
+        ShowNotification(source, "Order placed: " .. drinkName)
+    else
+        -- Self-service: give the drink item directly
+        if itemName and itemName ~= "" then
+            local flavorsConfig = Config.Bartender.flavors
+            local flavorLabels = {}
+            for _, key in ipairs(requiredFlavorKeys) do
+                local f = flavorsConfig[key]
+                if f then flavorLabels[#flavorLabels + 1] = string.lower(f.label) end
+            end
+            local description
+            if #flavorLabels == 1 then
+                description = ("A %s drink."):format(flavorLabels[1])
+            elseif #flavorLabels > 1 then
+                table.sort(flavorLabels)
+                description = ("A %s mixture."):format(table.concat(flavorLabels, "-"))
+            else
+                description = "A bar drink."
+            end
+            if alcoholPct and alcoholPct >= 20 then
+                description = description .. " Strong."
+            elseif alcoholPct and alcoholPct >= 10 then
+                description = description .. " (Medium.)"
+            elseif alcoholPct and alcoholPct > 0 then
+                description = description .. " (Light.)"
+            end
+            local metadata = { flavors = requiredFlavorKeys, alcoholPct = alcoholPct or 0, description = description }
+            RegisterDrinkItemIfNeeded(itemName)
+            if not Inventory.CanCarryItem or Inventory.CanCarryItem(source, itemName, 1) then
+                Inventory.AddItem(source, itemName, 1, metadata)
+                ShowNotification(source, "Here's your " .. drinkName)
+            else
+                ShowNotification(source, "You cannot carry this item")
+                -- Refund
+                if price and price > 0 then
+                    AddMoney(source, price, "money")
+                end
+            end
+        else
+            ShowNotification(source, "Drink has no associated item")
+            if price and price > 0 then
+                AddMoney(source, price, "money")
+            end
+        end
+    end
 end)
 
 -- Track equipped drinks for syncing
@@ -853,13 +921,13 @@ local function MatchDrinkToMenu(stationId, flavorWeights)
     table.sort(sortedTaste, function(a, b) return a.weight > b.weight end)
 
     for _, entry in pairs(menu) do
-        if type(entry) == "table" and type(entry.flavors) == "table" and #entry.flavors > 0
+        if type(entry) == "table" and DrinkHasValidFlavors(entry)
             and type(entry.item) == "string" and entry.item ~= "" then
             -- Check alcohol tolerance
             local entryAlcohol = entry.alcohol or 0
             if math.abs(submittedAlcoholPct - entryAlcohol) <= tolerance then
                 -- Check all required flavors are present
-                local requiredFlavors = entry.flavors
+                local requiredFlavors = GetValidFlavors(entry)
                 local allPresent = true
                 local requiredWeight = 0
                 for _, flavorKey in ipairs(requiredFlavors) do
@@ -919,7 +987,7 @@ RegisterNetEvent("pickle_clubs:giveDrinkItem", function(stationId, flavorWeights
         description = description .. " (Light.)"
     end
 
-    local metadata = { flavors = entry.flavors, alcoholPct = alcoholPct, description = description }
+    local metadata = { flavors = GetValidFlavors(entry), alcoholPct = alcoholPct, description = description }
     RegisterDrinkItemIfNeeded(itemName)
     Inventory.AddItem(source, itemName, 1, metadata)
     ShowNotification(source, "You received a " .. (entry.name or itemName))
@@ -927,6 +995,28 @@ end)
 
 -- Callback so client only proceeds when server grants control (prevents race where client starts interaction despite denial)
 lib.callback.register("pickle_clubs:requestStationControl", function(source, stationId, controlType)
+    -- Check job access for bartending (interaction control)
+    if controlType == "interaction" then
+        local clubId = GetClubIdFromStationId(stationId)
+        if clubId then
+            local club = Clubs[clubId]
+            if club and club.jobs and #club.jobs > 0 then
+                local jobName = GetPlayerJobName(source)
+                local hasAccess = false
+                if jobName then
+                    for _, j in ipairs(club.jobs) do
+                        if j.name == jobName then
+                            hasAccess = true
+                            break
+                        end
+                    end
+                end
+                if not hasAccess then
+                    return false, "You don't have the required job to bartend here"
+                end
+            end
+        end
+    end
     local success, message = SetStationController(stationId, source, controlType)
     return success, (not success and (message or "Station is already in use")) or nil
 end)
@@ -941,6 +1031,29 @@ RegisterNetEvent("pickle_clubs:setStationController", function(stationId, contro
 end)
 
 RegisterNetEvent("pickle_clubs:clearStationController", function(stationId, controlType)
+    -- Cancel and refund player orders when the bartender leaves
+    if controlType == "interaction" then
+        local stationData = StationData[stationId]
+        if stationData and stationData.orderQueue then
+            local refunded = {}
+            for i = #stationData.orderQueue, 1, -1 do
+                local order = stationData.orderQueue[i]
+                if order.isPlayerOrder and order.playerSource then
+                    local price = order.price or 0
+                    if price > 0 and GetPlayerPing(order.playerSource) > 0 then
+                        AddMoney(order.playerSource, price, "money")
+                    end
+                    if GetPlayerPing(order.playerSource) > 0 then
+                        ShowNotification(order.playerSource, "Your order has been cancelled and refunded")
+                    end
+                    table.insert(refunded, i)
+                end
+            end
+            for _, idx in ipairs(refunded) do
+                table.remove(stationData.orderQueue, idx)
+            end
+        end
+    end
     ClearStationController(stationId, controlType)
 end)
 
@@ -960,75 +1073,6 @@ RegisterNetEvent("pickle_clubs:requestStations", function()
     TriggerClientEvent("pickle_clubs:syncStations", src, StationRegistry)
 end)
 
--- Generate item files on resource start
-local function GenerateItemFiles()
-    local allItems = GenerateAllDrinkItems()
-    local resourceName = GetCurrentResourceName()
-    
-    if #allItems == 0 then
-        print("^1[pickle_clubs]^0 No drink items to generate!")
-        return
-    end
-    
-    -- Generate QBCore format
-    local qbcoreContent = "-- Auto-generated drink items for QBCore\n"
-    qbcoreContent = qbcoreContent .. "-- Add these to your qb-core/shared/items.lua file\n\n"
-    for i = 1, #allItems do
-        local item = allItems[i]
-        qbcoreContent = qbcoreContent .. "['" .. item.name .. "'] = {\n"
-        qbcoreContent = qbcoreContent .. "    ['name'] = '" .. item.name .. "',\n"
-        qbcoreContent = qbcoreContent .. "    ['label'] = '" .. item.label .. "',\n"
-        qbcoreContent = qbcoreContent .. "    ['weight'] = 200,\n"
-        qbcoreContent = qbcoreContent .. "    ['type'] = 'item',\n"
-        qbcoreContent = qbcoreContent .. "    ['image'] = 'drink.png',\n"
-        qbcoreContent = qbcoreContent .. "    ['unique'] = false,\n"
-        qbcoreContent = qbcoreContent .. "    ['useable'] = true,\n"
-        qbcoreContent = qbcoreContent .. "    ['shouldClose'] = true,\n"
-        qbcoreContent = qbcoreContent .. "    ['combinable'] = nil,\n"
-        qbcoreContent = qbcoreContent .. "    ['description'] = '" .. item.label .. " from the bar.'\n"
-        qbcoreContent = qbcoreContent .. "},\n"
-    end
-    
-    -- Generate ox_inventory format
-    local oxContent = "-- Auto-generated drink items for ox_inventory\n"
-    oxContent = oxContent .. "-- Add these to your ox_inventory/data/items.lua file\n\n"
-    for i = 1, #allItems do
-        local item = allItems[i]
-        oxContent = oxContent .. "['" .. item.name .. "'] = {\n"
-        oxContent = oxContent .. "    label = '" .. item.label .. "',\n"
-        oxContent = oxContent .. "    weight = 200,\n"
-        oxContent = oxContent .. "    stack = true,\n"
-        oxContent = oxContent .. "    description = '" .. item.label .. " from the bar.'\n"
-        oxContent = oxContent .. "},\n"
-    end
-    
-    -- Generate ESX SQL format
-    local esxContent = "-- Auto-generated drink items for ESX\n"
-    esxContent = esxContent .. "-- Run these SQL commands in your database\n\n"
-    for i = 1, #allItems do
-        local item = allItems[i]
-        local sqlName = string.gsub(item.name, "'", "''") -- Escape single quotes
-        local sqlLabel = string.gsub(item.label, "'", "''")
-        esxContent = esxContent .. "INSERT INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES ('" .. sqlName .. "', '" .. sqlLabel .. "', 200, 0, 1);\n"
-    end
-    
-    -- Write files
-    local qbcorePath = "__INSTALL/drink_items/qbcore.lua"
-    local oxPath = "__INSTALL/drink_items/ox_inventory.lua"
-    local esxPath = "__INSTALL/drink_items/esx.sql"
-    
-    SaveResourceFile(resourceName, qbcorePath, qbcoreContent, -1)
-    SaveResourceFile(resourceName, oxPath, oxContent, -1)
-    SaveResourceFile(resourceName, esxPath, esxContent, -1)
-    
-    print("^2[pickle_clubs]^0 Generated " .. #allItems .. " drink items in __INSTALL/drink_items/")
-    print("^3  - qbcore.lua")
-    print("^3  - ox_inventory.lua")
-    print("^3  - esx.sql")
-end
-
--- Export function to get all drink items (for item file generation)
-exports("GetAllDrinkItems", GetAllDrinkItems)
 exports("GetStation", GetStation)
 exports("IsStationControlled", IsStationControlled)
 exports("SetStationController", SetStationController)
@@ -1060,21 +1104,18 @@ CreateThread(function()
     })
 end)
 
--- Register club drink items and generate install files after clubs load
+-- Register club drink items as usable after clubs load
 CreateThread(function()
     Wait(3000) -- Wait for clubs to load from SQL
-
-    -- Generate item files from club menus
-    GenerateItemFiles()
-
-    -- Register all items as usable
-    local allItems = GenerateAllDrinkItems()
-    print("^2[pickle_clubs]^0 Registering " .. #allItems .. " drink items from club menus...")
-    for i = 1, #allItems do
-        local item = allItems[i]
-        RegisterDrinkItemIfNeeded(item.name)
+    local seen = {}
+    for _, club in pairs(Clubs or {}) do
+        for _, entry in pairs(club.drink_menu or {}) do
+            if type(entry) == "table" and type(entry.item) == "string" and entry.item ~= "" and not seen[entry.item] and DrinkHasValidFlavors(entry) then
+                seen[entry.item] = true
+                RegisterDrinkItemIfNeeded(entry.item)
+            end
+        end
     end
-    print("^2[pickle_clubs]^0 All drink items registered!")
 end)
 
 -- Sync equipped drink to nearby players
@@ -1125,7 +1166,6 @@ end)
 -- Handle scaled alcohol when player actually drinks (holds E); amount is proportion consumed 0-1
 RegisterNetEvent("pickle_clubs:drinkConsumed", function(amount, alcoholPct)
     local source = source
-    debugPrint(("[drinkConsumed] source=%s amount=%s alcoholPct=%s AddAlcohol=%s"):format(tostring(source), tostring(amount), tostring(alcoholPct), tostring(AddAlcohol ~= nil)))
     if not amount or amount <= 0 then return end
     if amount > 1.0 then amount = 1.0 end
     alcoholPct = tonumber(alcoholPct)
@@ -1135,7 +1175,6 @@ RegisterNetEvent("pickle_clubs:drinkConsumed", function(amount, alcoholPct)
         -- Send raw alcohol contribution: amount consumed * alcohol fraction
         -- e.g. full drink at 5% = 1.0 * 0.05 = 0.05
         local alcoholValue = amount * (alcoholPct / 100)
-        debugPrint(("[drinkConsumed] alcoholValue=%s"):format(tostring(alcoholValue)))
         if alcoholValue > 0 then
             AddAlcohol(source, alcoholValue)
         end

@@ -51,6 +51,56 @@ RegisterNetEvent("pickle_clubs:throwOutPlayer", function(id)
     ThrowOutPlayer(source, id)
 end)
 
+-- Escort: attach victim to bouncer
+RegisterNetEvent("pickle_clubs:startEscort", function(targetSource, bouncerSource)
+    targetSource = tonumber(targetSource)
+    bouncerSource = tonumber(bouncerSource)
+    if not targetSource or not bouncerSource then return end
+    ShowNotification(targetSource, "You are being escorted by a bouncer")
+    TriggerClientEvent("pickle_clubs:escortAttach", targetSource, bouncerSource)
+end)
+
+-- Escort: fling victim
+RegisterNetEvent("pickle_clubs:flingEscort", function(targetSource, forwardX, forwardY)
+    targetSource = tonumber(targetSource)
+    if not targetSource then return end
+    TriggerClientEvent("pickle_clubs:escortFling", targetSource, forwardX, forwardY)
+end)
+
+-- Escort: release victim
+RegisterNetEvent("pickle_clubs:stopEscort", function(targetSource)
+    targetSource = tonumber(targetSource)
+    if not targetSource then return end
+    TriggerClientEvent("pickle_clubs:escortDetach", targetSource)
+end)
+
+-- Revoke all club passes for a player
+RegisterNetEvent("pickle_clubs:revokeAllPasses", function(targetSource)
+    targetSource = tonumber(targetSource)
+    if not targetSource then return end
+    for clubId, passes in pairs(ClubPasses or {}) do
+        if passes[targetSource] then
+            SetClubPass(targetSource, clubId, false)
+        end
+    end
+end)
+
+-- Get a player's inventory for search
+lib.callback.register("pickle_clubs:getPlayerInventory", function(source, targetSource)
+    targetSource = tonumber(targetSource)
+    if not targetSource or not Inventory or not Inventory.GetInventory then return {}, "Unknown" end
+    local items = Inventory.GetInventory(targetSource)
+    for i = 1, #items do
+        local item = items[i]
+        if Inventory.Items and Inventory.Items[item.name] then
+            item.label = Inventory.Items[item.name].label or item.label or item.name
+            item.description = Inventory.Items[item.name].description
+        end
+    end
+    local charName = GetPlayerCharacterName and GetPlayerCharacterName(targetSource) or ("Player " .. targetSource)
+    return items, charName
+end)
+
 CreateThread(function()
     RegisterEntityType("bouncer", {
         label = "Bouncer",

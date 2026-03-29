@@ -4,6 +4,11 @@ import { InteractiveEntityDisplay } from "./components/InteractiveEntityDisplay"
 import { OrderDisplay } from "./components/OrderDisplay";
 import { ClubManagement } from "./components/club/ClubManagement";
 import { InteractText } from "./components/InteractText";
+import { RecipeBook } from "./components/RecipeBook";
+import { DrinkOrder } from "./components/DrinkOrder";
+import { SocietyPanel } from "./components/SocietyPanel";
+import { ClubEntryDialog } from "./components/ClubEntryDialog";
+import { SearchPanel } from "./components/SearchPanel";
 import { useNuiEvent } from "./providers/nui/useNui";
 import { useState } from "react";
 
@@ -87,6 +92,11 @@ function App() {
       <OrderDisplay />
       <ClubManagement />
       <InteractText />
+      <RecipeBook />
+      <DrinkOrder />
+      <SocietyPanel />
+      <ClubEntryDialog />
+      <SearchPanel />
     </div>
   )
 }

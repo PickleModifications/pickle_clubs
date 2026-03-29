@@ -156,10 +156,6 @@ local function ApplyWalkCycle(level)
             ResetPedMovementClipset(ped, 0.25)
             CurrentWalkCycle = nil
             
-            -- Debug output
-            if Config.Debug and Config.DrunkEffects.debug then
-                print("[Drunk Effects] Walk cycle reset to normal")
-            end
         end
         return
     end
@@ -177,10 +173,6 @@ local function ApplyWalkCycle(level)
         SetPedMovementClipset(ped, walkCycleClipset, 0.25)
         CurrentWalkCycle = level
         
-        -- Debug output
-        if Config.Debug and Config.DrunkEffects.debug then
-            print(string.format("[Drunk Effects] Walk cycle changed to: %s", level))
-        end
     end
 end
 
@@ -199,13 +191,6 @@ local function StartDrunkEffectsThread()
             ApplyCameraShake(level)
             ApplyWalkCycle(level)
             
-            -- Debug output (can be removed later)
-            if Config.Debug and Config.DrunkEffects.debug then
-                if math.random(1, 300) == 1 then -- Print every ~5 seconds
-                    print(string.format("[Drunk Effects] Level: %s, Alcohol: %.4f, Intensity: %.2f",
-                        level, CurrentAlcoholLevel, GetDrunkIntensity()))
-                end
-            end
         end
         
         -- Cleanup when alcohol reaches 0 (ensure walk cycle is reset)
@@ -228,10 +213,6 @@ local function StartDrunkEffectsThread()
             CurrentWalkCycle = nil
         end
         
-        -- Debug output
-        if Config.Debug and Config.DrunkEffects.debug then
-            print("[Drunk Effects] Cleanup complete - walk cycle reset")
-        end
         
         DrunkEffectsThread = nil
         IsDrunkEffectsActive = false
@@ -289,10 +270,6 @@ RegisterNetEvent("pickle_clubs:addAlcohol", function(amount)
             StartDrunkEffectsThread()
         end
 
-        -- Debug output
-        if Config.Debug and Config.DrunkEffects.debug then
-            print(string.format("[Drunk Effects] Added alcohol: %.4f, Total: %.4f", amount, CurrentAlcoholLevel))
-        end
     end
 
     -- Evidence system (existing functionality)

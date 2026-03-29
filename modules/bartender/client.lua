@@ -848,34 +848,74 @@ RegisterNetEvent("pickle_clubs:drinkSubmissionResult", function(success, feedbac
     end
 end)
 
+DrinkOrderOpen = false
+
 function OpenPlayerOrderDrinkSelector(stationId)
+    if DrinkOrderOpen then
+        CloseDrinkOrder()
+        return
+    end
     lib.callback("pickle_clubs:getClubDrinkMenu", false, function(drinkList)
         if not drinkList or #drinkList == 0 then
             ShowNotification("No drinks available")
             return
         end
-        local contextOptions = {}
+        local alcoholLabel = Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.label or "Alcohol"
+        local drinks = {}
         for _, opt in ipairs(drinkList) do
-            local title = opt.name or ("Drink " .. tostring(opt.drinkKey))
-            if opt.price and opt.price > 0 then
-                title = title .. (" - $%d"):format(opt.price)
+            local flavorDetails = {}
+            for _, fk in ipairs(opt.flavors or {}) do
+                local f = Config.Bartender.flavors[fk]
+                if f then
+                    flavorDetails[#flavorDetails + 1] = {
+                        key = fk,
+                        label = f.label,
+                        color = f.color,
+                    }
+                end
             end
-            table.insert(contextOptions, {
-                title = title,
-                description = "Order this drink",
-                onSelect = function()
-                    TriggerServerEvent("pickle_clubs:placePlayerOrder", stationId, opt.drinkKey)
-                end,
-            })
+            drinks[#drinks + 1] = {
+                drinkKey = opt.drinkKey,
+                name = opt.name,
+                price = opt.price or 0,
+                flavors = flavorDetails,
+                alcoholPct = opt.alcoholPct or 0,
+                alcoholLabel = alcoholLabel,
+            }
         end
-        lib.registerContext({
-            id = "player_order_drinks_" .. (stationId or "unknown"),
-            title = "Place Order",
-            options = contextOptions,
+        table.sort(drinks, function(a, b) return a.name < b.name end)
+        DrinkOrderOpen = true
+        SetNuiFocus(true, true)
+        SetNuiFocusKeepInput(false)
+        SendNUIMessage({
+            type = "openDrinkOrder",
+            data = {
+                stationId = stationId,
+                drinks = drinks,
+                currency = Config.Currency and Config.Currency.currency or "USD",
+                countryCode = Config.Currency and Config.Currency.countryCode or "en-US",
+            },
         })
-        lib.showContext("player_order_drinks_" .. (stationId or "unknown"))
     end, stationId)
 end
+
+function CloseDrinkOrder()
+    DrinkOrderOpen = false
+    SetNuiFocus(false, false)
+    SendNUIMessage({ type = "closeDrinkOrder" })
+end
+
+RegisterNUICallback("closeDrinkOrder", function(_, cb)
+    CloseDrinkOrder()
+    cb("ok")
+end)
+
+RegisterNUICallback("orderDrink", function(data, cb)
+    if data and data.stationId and data.drinkKey then
+        TriggerServerEvent("pickle_clubs:placePlayerOrder", data.stationId, data.drinkKey)
+    end
+    cb("ok")
+end)
 
 function OpenBartenderRegister()
     if not CURRENT_INTERACTION or not CURRENT_INTERACTION.stationId then
@@ -920,6 +960,60 @@ function OpenBartenderRegister()
     })
     lib.showContext("bartender_register")
 end
+
+RecipeBookOpen = false
+
+function OpenRecipeBook()
+    if RecipeBookOpen then
+        CloseRecipeBook()
+        return
+    end
+    if not CurrentStationMenu or #CurrentStationMenu == 0 then
+        ShowNotification("No drinks on the menu")
+        return
+    end
+    -- Build recipe list with flavor details
+    local recipes = {}
+    local alcoholLabel = Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.label or "Alcohol"
+    for _, drink in ipairs(CurrentStationMenu) do
+        local flavorDetails = {}
+        for _, fk in ipairs(drink.flavors or {}) do
+            local f = Config.Bartender.flavors[fk]
+            if f then
+                flavorDetails[#flavorDetails + 1] = {
+                    key = fk,
+                    label = f.label,
+                    color = f.color,
+                }
+            end
+        end
+        recipes[#recipes + 1] = {
+            name = drink.name,
+            flavors = flavorDetails,
+            alcoholPct = drink.alcoholPct or 0,
+            alcoholLabel = alcoholLabel,
+        }
+    end
+    table.sort(recipes, function(a, b) return a.name < b.name end)
+    RecipeBookOpen = true
+    SetNuiFocus(true, true)
+    SetNuiFocusKeepInput(false)
+    SendNUIMessage({
+        type = "openRecipeBook",
+        recipes = recipes,
+    })
+end
+
+function CloseRecipeBook()
+    RecipeBookOpen = false
+    SetNuiFocus(false, false)
+    SendNUIMessage({ type = "closeRecipeBook" })
+end
+
+RegisterNUICallback("closeRecipeBook", function(_, cb)
+    CloseRecipeBook()
+    cb("ok")
+end)
 
 -- Store interaction indices for stations
 StationInteractions = {} -- stationId -> interactionIndex
@@ -966,77 +1060,77 @@ function LoadStation(station)
         interactRadius = Config.InteractDistance,
     }, function()
         local stationId = station.id
-        lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
-            if isAdmin then
-                lib.registerContext({
-                    id = "station_interact_" .. stationId,
-                    title = "Station " .. stationId,
-                    options = {
-                        {
-                            title = "Manage",
-                            description = "Open this station's management menu",
-                            onSelect = function()
-                                local clubIdStr, entityId = stationId:match("^(%d+):(.+)$")
-                                if clubIdStr and entityId then
-                                    local clubId = tonumber(clubIdStr)
-                                    OpenClubManagementNuiForEntity(clubId, entityId)
-                                else
-                                    OpenClubManagementNui()
-                                end
-                            end,
-                        },
-                        {
-                            title = "Place Order",
-                            description = "Order a drink from the bar",
-                            onSelect = function()
-                                lib.callback("pickle_clubs:canPlacePlayerOrder", false, function(canPlace, reason)
-                                    if not canPlace then
-                                        ShowNotification(reason or "Cannot place order")
-                                        return
-                                    end
-                                    OpenPlayerOrderDrinkSelector(stationId)
-                                end, stationId)
-                            end,
-                        },
-                        {
-                            title = "Start Bartending",
-                            description = "Begin bartending at this station",
-                            onSelect = function()
-                                StartStationInteraction({stationId = stationId})
-                            end,
-                        },
-                    },
-                })
-                lib.showContext("station_interact_" .. stationId)
+        -- Check if player has bartending job access for this station's club
+        local clubIdStr = stationId:match("^(%d+):")
+        local clubId = clubIdStr and tonumber(clubIdStr)
+        local canBartend = false
+        if clubId then
+            local club = Clubs[clubId]
+            if club and club.jobs then
+                local jobAccess = {}
+                for _, j in ipairs(club.jobs) do
+                    if j.name and j.name ~= "" then
+                        jobAccess[j.name] = 0
+                    end
+                end
+                if next(jobAccess) then
+                    canBartend = CanAccessGroup(jobAccess)
+                else
+                    canBartend = true -- No jobs configured = anyone can bartend
+                end
             else
-                lib.registerContext({
-                    id = "station_interact_customer_" .. stationId,
-                    title = "Bartending Station",
-                    options = {
-                        {
-                            title = "Place Order",
-                            description = "Order a drink from the bar",
-                            onSelect = function()
-                                lib.callback("pickle_clubs:canPlacePlayerOrder", false, function(canPlace, reason)
-                                    if not canPlace then
-                                        ShowNotification(reason or "Cannot place order")
-                                        return
-                                    end
-                                    OpenPlayerOrderDrinkSelector(stationId)
-                                end, stationId)
-                            end,
-                        },
-                        {
-                            title = "Start Bartending",
-                            description = "Begin bartending at this station",
-                            onSelect = function()
-                                StartStationInteraction({stationId = stationId})
-                            end,
-                        },
-                    },
-                })
-                lib.showContext("station_interact_customer_" .. stationId)
+                canBartend = true
             end
+        end
+
+        lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
+            local options = {}
+
+            if isAdmin then
+                table.insert(options, {
+                    title = "Manage",
+                    description = "Open this station's management menu",
+                    onSelect = function()
+                        local cIdStr, entityId = stationId:match("^(%d+):(.+)$")
+                        if cIdStr and entityId then
+                            OpenClubManagementNuiForEntity(tonumber(cIdStr), entityId)
+                        else
+                            OpenClubManagementNui()
+                        end
+                    end,
+                })
+            end
+
+            table.insert(options, {
+                title = "Place Order",
+                description = "Order a drink from the bar",
+                onSelect = function()
+                    lib.callback("pickle_clubs:canPlacePlayerOrder", false, function(canPlace, reason)
+                        if not canPlace then
+                            ShowNotification(reason or "Cannot place order")
+                            return
+                        end
+                        OpenPlayerOrderDrinkSelector(stationId)
+                    end, stationId)
+                end,
+            })
+
+            if canBartend then
+                table.insert(options, {
+                    title = "Start Bartending",
+                    description = "Begin bartending at this station",
+                    onSelect = function()
+                        StartStationInteraction({stationId = stationId})
+                    end,
+                })
+            end
+
+            lib.registerContext({
+                id = "station_interact_" .. stationId,
+                title = "Bartending Station",
+                options = options,
+            })
+            lib.showContext("station_interact_" .. stationId)
         end)
     end)
 
@@ -1113,13 +1207,12 @@ function CreateStationInteraction(station)
     CreateInteractiveEntity("coaster", coords + (interaction.rightVector * -0.2), heading, {})
     
     -- Create drink
-    CreateInteractiveEntity("drink", coords + (interaction.rightVector * -0.15), heading, {
-        progress = 1.0,
-        flavorWeights = {
-            [1] = 1.0,
-        },
+    CreateInteractiveEntity("drink", coords + (interaction.rightVector * -0.05), heading, {
+        progress = 0.0,
+        flavorWeights = {},
         display = {
             title = _L("bartender_drink"),
+            itemSize = 0.65,
             secondaryTitle = "0%",
             rows = {
                 {type = "text", label = _L("bartender_empty")}
@@ -1132,25 +1225,42 @@ function CreateStationInteraction(station)
         display = {
             title = _L("bartender_cash_register"),
             hiddenHover = true,
-            itemSize = 0.04,
+            hoverRadius = 0.04,
             rows = {
                 {type = "text", label = _L("bartender_start_stop_orders"), color = "secondary"}
             }
         },
     })
-    
-    -- Build sorted flavor key list for scroll cycling
+
+    -- Create recipe book
+    CreateInteractiveEntity("recipe_book", coords + (interaction.rightVector * 0.45), heading, {
+        display = {
+            title = _L("bartender_recipe_book"),
+            hiddenHover = true,
+            hoverRadius = 0.04,
+            maxScale = 0.5,
+            rows = {
+                {type = "text", label = _L("bartender_recipe_book_hint"), color = "secondary"}
+            }
+        },
+    })
+
+    -- Build flavor key list sorted alphabetically by label
     local flavorKeys = {}
     for key, _ in pairs(Config.Bartender.flavors) do
         flavorKeys[#flavorKeys + 1] = key
     end
-    table.sort(flavorKeys)
+    table.sort(flavorKeys, function(a, b)
+        local labelA = Config.Bartender.flavors[a].label or a
+        local labelB = Config.Bartender.flavors[b].label or b
+        return labelA < labelB
+    end)
 
     -- Create single flavor bottle (scroll to cycle flavors)
     local firstKey = flavorKeys[1]
     local firstFlavor = firstKey and Config.Bartender.flavors[firstKey]
     if firstFlavor then
-        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * 0.45), heading, {
+        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * 0.25), heading, {
             color = firstFlavor.color,
             flavorKey = firstKey,
             flavorIndex = 1,
@@ -1159,11 +1269,9 @@ function CreateStationInteraction(station)
             display = {
                 title = firstFlavor.label,
                 secondaryTitle = "",
-                itemSize = 0.04,
-                minScale = 0.0,
-                maxScale = 0.5,
+                maxScale = 0.65,
                 rows = {
-                    {type = "text", label = _L("bartender_scroll_flavor"), center = true}
+                    {type = "text", label = _L("bartender_scroll_flavor")}
                 }
             },
         })
@@ -1171,17 +1279,16 @@ function CreateStationInteraction(station)
 
     -- Create alcohol bottle
     if Config.Bartender.alcoholBottle then
-        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * 0.35), heading, {
+        CreateInteractiveEntity("bottle", coords + (interaction.rightVector * 0.1), heading, {
             color = Config.Bartender.alcoholBottle.color,
             flavorKey = Config.Bartender.alcoholBottle.key,
             progress = 1.0,
             display = {
                 title = Config.Bartender.alcoholBottle.label,
-                secondaryTitle = "",
-                itemSize = 0.04,
-                minScale = 0.0,
-                maxScale = 0.5,
-                rows = {}
+                maxScale = 0.65,
+                rows = {
+                    {type = "text", label = _L("bartender_alcohol_subtitle"), color = "secondary"}
+                }
             },
         })
     end
@@ -1270,7 +1377,6 @@ CreateThread(function()
                 id = ("%s:%s"):format(id, entityId),
                 coords = coords,
                 heading = entity.bartender.heading or 0.0,
-                blip = entity.bartender.blip,
                 clubId = id,
                 entityId = entityId,
                 society_name = primaryJobName,
@@ -1290,9 +1396,14 @@ end)
 -- Hook into StopInteraction to cleanup all bartender-related state
 -- Note: Register visibility is handled by server event (pickle_clubs:showStationRegister)
 AddEventHandler("pickle_clubs:stopInteraction", function()
+    -- Close recipe book if open
+    if RecipeBookOpen then
+        CloseRecipeBook()
+    end
+
     if CURRENT_INTERACTION and CURRENT_INTERACTION.stationId then
         local stationId = CURRENT_INTERACTION.stationId
-        
+
         -- Stop bartender service if active (this will cleanup NPCs server-side)
         if BartenderServiceActive[stationId] then
             TriggerServerEvent("pickle_clubs:stopBartenderService", stationId)
@@ -1445,13 +1556,6 @@ CreateThread(function()
             end
 
             -- Scroll to cycle flavors (only when hovering over this bottle and not holding it)
-            if currentEntity.flavorKeys then
-                if SCROLL_INPUT ~= 0 then
-                    debugPrint(("[Bottle] SCROLL_INPUT=%d HOVERED=%s entity=%s match=%s CURRENT=%s"):format(
-                        SCROLL_INPUT, tostring(HOVERED_ENTITY), tostring(entity), tostring(HOVERED_ENTITY == entity), tostring(CURRENT_ENTITY)
-                    ))
-                end
-            end
             if currentEntity.flavorKeys and HOVERED_ENTITY == entity and not CURRENT_ENTITY and SCROLL_INPUT ~= 0 then
                 local idx = currentEntity.flavorIndex or 1
                 local keys = currentEntity.flavorKeys
@@ -1471,11 +1575,9 @@ CreateThread(function()
                     UpdateInteractiveEntityDisplay(entity, {
                         title = newFlavor.label,
                         secondaryTitle = "",
-                        itemSize = 0.04,
-                        minScale = 0.0,
-                        maxScale = 0.5,
+                        maxScale = 0.65,
                         rows = {
-                            {type = "text", label = _L("bartender_scroll_flavor"), center = true}
+                            {type = "text", label = _L("bartender_scroll_flavor")}
                         }
                     })
                 end
@@ -1634,28 +1736,46 @@ CreateThread(function()
             end
             
             -- Draw flavor percentages above the drink
-            local secondaryTitle = math.floor(INT_ENTITIES[entity].progress * 100 + 0.5) .. "%"
+            local progress = INT_ENTITIES[entity].progress
+            local totalPct = math.floor(progress * 100)
+            local secondaryTitle = totalPct .. "%"
             local flavorWeights = INT_ENTITIES[entity].flavorWeights
             if flavorWeights and next(flavorWeights) ~= nil then
                 local textY = position.z + 0.15 -- Start above the drink
                 local textLines = {}
-                
-                -- Percentages are absolute: weight * progress = how much of the full glass this ingredient fills
+
                 local alcoholKey = Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.key or "_alcohol"
                 local alcoholLabel = Config.Bartender.alcoholBottle and Config.Bartender.alcoholBottle.label or "Alcohol"
-                local progress = INT_ENTITIES[entity].progress
 
+                -- First pass: floor each percentage and track the sum
+                local sumFloored = 0
+                local largestIdx = nil
+                local largestVal = -1
                 for flavorKey, weight in pairs(flavorWeights) do
                     if weight > 0.001 then
                         local absolute = math.floor(weight * progress * 100)
+                        sumFloored = sumFloored + absolute
+                        local label
+                        local isAlcohol = false
                         if flavorKey == alcoholKey then
-                            table.insert(textLines, {type = "progress", label = alcoholLabel, value = absolute, isAlcohol = true})
+                            label = alcoholLabel
+                            isAlcohol = true
                         else
                             local flavor = Config.Bartender.flavors[flavorKey]
-                            local label = flavor and flavor.label or (_L("bartender_flavor_prefix") .. flavorKey)
-                            table.insert(textLines, {type = "progress", label = label, value = absolute})
+                            label = flavor and flavor.label or (_L("bartender_flavor_prefix") .. flavorKey)
+                        end
+                        table.insert(textLines, {type = "progress", label = label, value = absolute, isAlcohol = isAlcohol})
+                        if absolute > largestVal then
+                            largestVal = absolute
+                            largestIdx = #textLines
                         end
                     end
+                end
+
+                -- Distribute rounding remainder to the largest ingredient
+                local remainder = totalPct - sumFloored
+                if remainder ~= 0 and largestIdx then
+                    textLines[largestIdx].value = textLines[largestIdx].value + remainder
                 end
 
                 -- Sort by value (descending)
@@ -1763,8 +1883,22 @@ CreateThread(function()
             OpenBartenderRegister()
         end,
     })
+    RegisterInteractiveEntity("recipe_book", {
+        init = function(coords, heading, data, params)
+            local book = CreateProp(`prop_stripmenu`, coords.x, coords.y, coords.z, false, false, false)
+            SetEntityCollision(book, true, true)
+            SetEntityHeading(book, heading)
+            return book, {
+                disableInteraction = true,
+                disableGravity = true,
+            }
+        end,
+        clicked = function(entity, data)
+            OpenRecipeBook()
+        end,
+    })
     -- Stations are now loaded dynamically from database via syncStations event
-    -- Hardcoded station removed - use /managebar to create stations
+    -- Hardcoded station removed - use /clubs to create stations
 end)
 
 -- Helper function to throw away drink with physics
@@ -2023,7 +2157,6 @@ RegisterNetEvent("pickle_clubs:useDrinkItem", function(itemName, flavors, alcoho
                     amountConsumed = initialProgress - equippedDrinkRef.progress
                 end
                 if amountConsumed > 0.0 then
-                    debugPrint(("[Drinking] Consumed: " .. tostring(amountConsumed) .. " alcoholPct: " .. tostring(equippedDrinkRef.alcoholPct)))
                     TriggerServerEvent("pickle_clubs:drinkConsumed", amountConsumed, equippedDrinkRef.alcoholPct)
                 end
                 

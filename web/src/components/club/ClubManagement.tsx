@@ -3,6 +3,8 @@ import { AppControls } from "../../App";
 import { fetchNui } from "../../providers/nui/fetchNui";
 import { useNuiEvent } from "../../providers/nui/useNui";
 import { Button } from "../ui/button";
+import { useLocale } from "../../providers/locale/Locale";
+import { MapPin, Move, Navigation } from "lucide-react";
 
 type Vec3 = { x: number; y: number; z: number };
 type ViewMode = "clubsRoot" | "clubDetail" | "entityDetail";
@@ -60,6 +62,8 @@ type DrinkMenuItem = { name: string; flavors: string[]; alcohol: number; price: 
 type DrinkMenu = Record<string, DrinkMenuItem>;
 type ClubFlavor = { label: string; color: [number, number, number]; isAlcohol?: boolean };
 type FlavorMap = Record<string, ClubFlavor>;
+type PedConfig = { model: string };
+type PedMap = Record<string, PedConfig>;
 
 interface ClubSummary {
   id: number;
@@ -69,11 +73,21 @@ interface ClubSummary {
   jobs?: ClubJob[];
   entities?: Record<string, ClubEntity>;
   drink_menu?: DrinkMenu;
+  blip?: ClubBlip;
 }
 
 interface ClubManagementData {
   clubs?: ClubSummary[];
   flavors?: FlavorMap;
+  peds?: PedMap;
+}
+
+interface ClubBlip {
+  name: string;
+  color: number;
+  sprite: number;
+  scale: number;
+  visible: boolean;
 }
 
 interface ClubEditorState {
@@ -82,6 +96,7 @@ interface ClubEditorState {
   coords: Vec3;
   jobs: ClubJob[];
   drink_menu: DrinkMenu;
+  blip: ClubBlip;
 }
 
 interface EntityEditorState {
@@ -89,11 +104,6 @@ interface EntityEditorState {
   bartender: {
     coords: Vec3;
     heading: number;
-    blipName: string;
-    blipColor: number;
-    blipSprite: number;
-    blipScale: number;
-    blipVisible: boolean;
   };
   bouncer: {
     ped: string;
@@ -143,6 +153,7 @@ function normalizeClubs(raw: ClubSummary[]): ClubSummary[] {
     jobs: Array.isArray(club.jobs) ? club.jobs : [],
     entities: club.entities || {},
     drink_menu: club.drink_menu && typeof club.drink_menu === "object" ? club.drink_menu : {},
+    blip: club.blip,
   }));
 }
 
@@ -150,12 +161,20 @@ function createClubDraft(club?: ClubSummary): ClubEditorState {
   const jobs = Array.isArray(club?.jobs) ? club.jobs : [];
   const drink_menu: DrinkMenu =
     club?.drink_menu && typeof club.drink_menu === "object" ? (club.drink_menu as DrinkMenu) : {};
+  const blip = club?.blip;
   return {
     label: club?.label || "",
     description: club?.description || "",
     coords: toVec3(club?.coords, DEFAULT_VEC3),
     jobs: jobs.length ? jobs : [],
     drink_menu,
+    blip: {
+      name: blip?.name || club?.label || "",
+      color: blip?.color ?? 5,
+      sprite: blip?.sprite ?? 614,
+      scale: blip?.scale ?? 0.8,
+      visible: blip?.visible !== false,
+    },
   };
 }
 
@@ -165,11 +184,6 @@ function createEmptyEntityDraft(): EntityEditorState {
     bartender: {
       coords: { ...DEFAULT_VEC3 },
       heading: 0,
-      blipName: "Bartending Station",
-      blipColor: 5,
-      blipSprite: 52,
-      blipScale: 0.8,
-      blipVisible: true,
     },
     bouncer: {
       ped: "bouncer_1",
@@ -211,14 +225,8 @@ function createEntityDraft(club: ClubSummary, entityId?: string): EntityEditorSt
 
   if (entityType === "bartender") {
     const bartender = (entity.bartender || {}) as Record<string, unknown>;
-    const blip = (bartender.blip || {}) as Record<string, unknown>;
     base.bartender.coords = toVec3(bartender.coords, toVec3(club.coords, DEFAULT_VEC3));
     base.bartender.heading = typeof bartender.heading === "number" ? bartender.heading : 0;
-    base.bartender.blipName = typeof blip.name === "string" ? blip.name : "Bartending Station";
-    base.bartender.blipColor = typeof blip.color === "number" ? blip.color : 5;
-    base.bartender.blipSprite = typeof blip.sprite === "number" ? blip.sprite : 52;
-    base.bartender.blipScale = typeof blip.scale === "number" ? blip.scale : 0.8;
-    base.bartender.blipVisible = blip.visible !== false;
   } else if (entityType === "bouncer") {
     const bouncer = (entity.bouncer || {}) as Record<string, unknown>;
     base.bouncer.ped = typeof bouncer.ped === "string" ? bouncer.ped : "bouncer_1";
@@ -297,14 +305,17 @@ function emptyDrink(): DrinkMenuItem {
 }
 
 export function ClubManagement() {
+  const locale = useLocale();
   const [visible, setVisible] = useState(false);
   const [hidden, setHidden] = useState(true);
   const [panelHiddenForGizmo, setPanelHiddenForGizmo] = useState(false);
   const [focus, setFocus] = useState(true);
   const [view, setView] = useState<ViewMode>("clubsRoot");
   const [busyAction, setBusyAction] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [clubs, setClubs] = useState<ClubSummary[]>([]);
   const [flavors, setFlavors] = useState<FlavorMap>({});
+  const [peds, setPeds] = useState<PedMap>({});
   const [selectedClubId, setSelectedClubId] = useState<number | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [creatingClub, setCreatingClub] = useState(false);
@@ -408,6 +419,7 @@ export function ClubManagement() {
     setSelectedClubId(null);
     setSelectedEntityId(null);
     setCreatingEntity(false);
+    setConfirmingDelete(false);
     setEntityDraft(createEmptyEntityDraft());
   };
 
@@ -438,6 +450,7 @@ export function ClubManagement() {
     const nextClubs = normalizeClubs(data.clubs || []);
     setClubs(nextClubs);
     setFlavors(data.flavors && typeof data.flavors === "object" && !Array.isArray(data.flavors) ? data.flavors : {});
+    setPeds((data as any).peds && typeof (data as any).peds === "object" ? (data as any).peds : {});
     setCreatingClub(false);
     setClubDraft(createClubDraft());
     setEntityDraft(createEmptyEntityDraft());
@@ -494,13 +507,19 @@ export function ClubManagement() {
     startCloseTransition();
   }, [startCloseTransition]);
 
+  const hasBlipPosition = clubDraft.coords.x !== 0 || clubDraft.coords.y !== 0 || clubDraft.coords.z !== 0;
+  const canCreateClub = !!clubDraft.label.trim() && hasBlipPosition;
+
   const saveClub = async () => {
     if (!clubDraft.label.trim()) return;
+    if (creatingClub && !hasBlipPosition) return;
     const payload = {
       label: clubDraft.label.trim(),
       description: clubDraft.description,
+      coords: clubDraft.coords,
       jobs: clubDraft.jobs,
       drink_menu: clubDraft.drink_menu,
+      blip: clubDraft.blip,
     };
     await withBusyAction(async () => {
       if (creatingClub) {
@@ -562,15 +581,7 @@ export function ClubManagement() {
     if (draft.type === "bartender") {
       const base: ClubEntity = {
         type: "bartender",
-        bartender: {
-          blip: {
-            name: draft.bartender.blipName,
-            color: draft.bartender.blipColor,
-            sprite: draft.bartender.blipSprite,
-            scale: draft.bartender.blipScale,
-            visible: draft.bartender.blipVisible,
-          },
-        },
+        bartender: {},
       };
       if (includeTransform) {
         (base as BartenderEntity).bartender.coords = draft.bartender.coords;
@@ -663,6 +674,7 @@ export function ClubManagement() {
         description: draft.description,
         jobs: draft.jobs,
         drink_menu: draft.drink_menu,
+        blip: draft.blip,
       });
     }, DEBOUNCE_MS);
   }, [creatingClub, selectedClubId, sendClubAction]);
@@ -894,6 +906,88 @@ export function ClubManagement() {
                   </div>
                 </div>
                 <div className="space-y-2">
+                  <div className="text-xs font-semibold mb-1">{locale("club_blip")}</div>
+                  <div>
+                    <div className="text-[10px] text-muted-foreground mb-1">{locale("club_blip_name")}</div>
+                    <input
+                      type="text"
+                      value={clubDraft.blip.name}
+                      onChange={(e) => {
+                        setClubDraft((prev) => ({ ...prev, blip: { ...prev.blip, name: e.target.value } }));
+                        scheduleClubSave();
+                      }}
+                      className="w-full h-9 rounded-md border border-border bg-background px-2 text-sm"
+                      placeholder={locale("club_blip_name")}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="text-[10px] text-muted-foreground mb-1">{locale("club_blip_sprite")}</div>
+                      <NumericInput
+                        value={clubDraft.blip.sprite}
+                        onChange={(sprite) => {
+                          setClubDraft((prev) => ({ ...prev, blip: { ...prev.blip, sprite } }));
+                          scheduleClubSave();
+                        }}
+                        step="1"
+                      />
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-muted-foreground mb-1">{locale("club_blip_color")}</div>
+                      <NumericInput
+                        value={clubDraft.blip.color}
+                        onChange={(color) => {
+                          setClubDraft((prev) => ({ ...prev, blip: { ...prev.blip, color } }));
+                          scheduleClubSave();
+                        }}
+                        step="1"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-muted-foreground mb-1">{locale("club_blip_scale")}</div>
+                    <NumericInput
+                      value={clubDraft.blip.scale}
+                      onChange={(scale) => {
+                        setClubDraft((prev) => ({ ...prev, blip: { ...prev.blip, scale } }));
+                        scheduleClubSave();
+                      }}
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={clubDraft.blip.visible}
+                      onChange={(e) => {
+                        setClubDraft((prev) => ({ ...prev, blip: { ...prev.blip, visible: e.target.checked } }));
+                        scheduleClubSave();
+                      }}
+                    />
+                    {locale("club_blip_visible")}
+                  </label>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="w-full"
+                    onClick={async () => {
+                      if (creatingClub) {
+                        const coords = await fetchNui<Vec3>("getPlayerCoords");
+                        if (coords) {
+                          setClubDraft((prev) => ({ ...prev, coords }));
+                        }
+                      } else {
+                        editClubCoordsWithGizmo();
+                      }
+                    }}
+                    disabled={busyAction}
+                  >
+                    <MapPin className="w-3.5 h-3.5 mr-1" />{locale("club_blip_set_position")}
+                    {clubDraft.coords.x !== 0 || clubDraft.coords.y !== 0 || clubDraft.coords.z !== 0 ? (
+                      <span className="ml-1 text-[10px] text-muted-foreground">&#x2713;</span>
+                    ) : null}
+                  </Button>
+                </div>
+                <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="text-xs font-semibold">Drink Menu</div>
                     <Button
@@ -917,8 +1011,8 @@ export function ClubManagement() {
                   {Object.keys(clubDraft.drink_menu || {}).length === 0 && (
                     <div className="text-xs text-muted-foreground italic">No drinks yet — click &quot;+ Add Drink&quot; to create one.</div>
                   )}
-                  <div className="space-y-2">
-                    {Object.entries(clubDraft.drink_menu || {}).map(([key, drink]) => {
+                  <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                    {Object.entries(clubDraft.drink_menu || {}).sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || "")).map(([key, drink]) => {
                       const orderableEntries = Object.entries(flavors).filter(([, f]) => !f.isAlcohol);
                       const updateDrink = (patch: Partial<DrinkMenuItem>) => {
                         setClubDraft((prev) => ({
@@ -1133,25 +1227,44 @@ export function ClubManagement() {
                     })}
                   </div>
                 </div>
-                {!creatingClub && (
-                  <>
-                    <div className="text-xs text-muted-foreground">Center: {formatCoords(clubDraft.coords)}</div>
-                    <Button size="sm" variant="secondary" onClick={editClubCoordsWithGizmo} disabled={busyAction}>
-                      Set Club Center (Gizmo)
-                    </Button>
-                  </>
+                {creatingClub ? (
+                  <Button size="sm" className="w-full" onClick={saveClub} disabled={busyAction || !canCreateClub}>
+                    Create Club
+                  </Button>
+                ) : !confirmingDelete ? (
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    className="w-full"
+                    onClick={() => setConfirmingDelete(true)}
+                    disabled={busyAction}
+                  >
+                    Delete Club
+                  </Button>
+                ) : (
+                  <div className="w-full space-y-2 rounded-md border border-destructive p-2">
+                    <div className="text-xs text-destructive font-semibold">Are you sure? This cannot be undone.</div>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="flex-1"
+                        onClick={() => { setConfirmingDelete(false); deleteClub(); }}
+                        disabled={busyAction}
+                      >
+                        Confirm
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => setConfirmingDelete(false)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
                 )}
-                <div className="flex gap-2">
-                  {creatingClub ? (
-                    <Button size="sm" onClick={saveClub} disabled={busyAction}>
-                      Create Club
-                    </Button>
-                  ) : (
-                    <Button size="sm" variant="destructive" onClick={deleteClub} disabled={busyAction}>
-                      Delete Club
-                    </Button>
-                  )}
-                </div>
               </div>
 
               {!creatingClub && selectedClub && (
@@ -1173,8 +1286,8 @@ export function ClubManagement() {
                         onClick={() => openEntityDetail(entity.id)}
                         className="w-full rounded-md px-2 py-2 text-left text-xs bg-secondary hover:bg-secondary/80"
                       >
-                        <div className="font-mono">{entity.id}</div>
-                        <div className="text-muted-foreground">{entity.type}</div>
+                        <div className="font-semibold">{locale("entity_type_" + entity.type)}</div>
+                        <div className="text-muted-foreground font-mono text-[10px]">{entity.id}</div>
                       </button>
                     ))}
                   </div>
@@ -1190,7 +1303,7 @@ export function ClubManagement() {
               </Button>
               <div className="rounded-md border border-border bg-secondary/30 p-2 space-y-2">
                 <div className="text-sm font-semibold">
-                  {creatingEntity ? "Create Entity" : `Edit Entity ${selectedEntityId}`}
+                  {creatingEntity ? locale("entity_type_" + entityDraft.type) : locale("entity_type_" + entityDraft.type)}
                 </div>
                 {creatingEntity && (
                   <select
@@ -1203,10 +1316,10 @@ export function ClubManagement() {
                       }))
                     }
                   >
-                    <option value="bartender">bartender</option>
-                    <option value="bouncer">bouncer</option>
-                    <option value="club_entry">club_entry</option>
-                    <option value="society">society</option>
+                    <option value="bartender">{locale("entity_type_bartender")}</option>
+                    <option value="bouncer">{locale("entity_type_bouncer")}</option>
+                    <option value="club_entry">{locale("entity_type_club_entry")}</option>
+                    <option value="society">{locale("entity_type_society")}</option>
                   </select>
                 )}
 
@@ -1219,68 +1332,25 @@ export function ClubManagement() {
                           coords={entityDraft.bartender.coords}
                           heading={entityDraft.bartender.heading}
                         />
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => editEntityTransform("main")}
-                          disabled={busyAction}
-                        >
-                          Move Position (Gizmo)
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => editEntityTransform("main")}
+                            disabled={busyAction}
+                          >
+                            <Move className="w-3.5 h-3.5 mr-1" />{locale("entity_move_position")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => fetchNui("teleportToEntity", { clubId: selectedClubId, entityId: selectedEntityId })}
+                          >
+                            <Navigation className="w-3.5 h-3.5 mr-1" />{locale("entity_teleport")}
+                          </Button>
+                        </div>
                       </>
                     )}
-                    <input
-                      type="text"
-                      value={entityDraft.bartender.blipName}
-                      onChange={(e) => {
-                        setEntityDraft((prev) => ({
-                          ...prev,
-                          bartender: { ...prev.bartender, blipName: e.target.value },
-                        }));
-                        scheduleEntitySave();
-                      }}
-                      className="w-full h-9 rounded-md border border-border bg-background px-2 text-sm"
-                      placeholder="Blip name"
-                    />
-                    <div className="grid grid-cols-2 gap-2">
-                      <NumericInput
-                        value={entityDraft.bartender.blipColor}
-                        onChange={(blipColor) => {
-                          setEntityDraft((prev) => ({ ...prev, bartender: { ...prev.bartender, blipColor } }));
-                          scheduleEntitySave();
-                        }}
-                        step="1"
-                      />
-                      <NumericInput
-                        value={entityDraft.bartender.blipSprite}
-                        onChange={(blipSprite) => {
-                          setEntityDraft((prev) => ({ ...prev, bartender: { ...prev.bartender, blipSprite } }));
-                          scheduleEntitySave();
-                        }}
-                        step="1"
-                      />
-                    </div>
-                    <NumericInput
-                      value={entityDraft.bartender.blipScale}
-                      onChange={(blipScale) => {
-                        setEntityDraft((prev) => ({ ...prev, bartender: { ...prev.bartender, blipScale } }));
-                        scheduleEntitySave();
-                      }}
-                    />
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={entityDraft.bartender.blipVisible}
-                        onChange={(e) => {
-                          setEntityDraft((prev) => ({
-                            ...prev,
-                            bartender: { ...prev.bartender, blipVisible: e.target.checked },
-                          }));
-                          scheduleEntitySave();
-                        }}
-                      />
-                      Blip visible
-                    </label>
                   </div>
                 )}
 
@@ -1293,18 +1363,26 @@ export function ClubManagement() {
                           coords={entityDraft.bouncer.coords}
                           heading={entityDraft.bouncer.heading}
                         />
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => editEntityTransform("main")}
-                          disabled={busyAction}
-                        >
-                          Move Position (Gizmo)
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => editEntityTransform("main")}
+                            disabled={busyAction}
+                          >
+                            <Move className="w-3.5 h-3.5 mr-1" />{locale("entity_move_position")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => fetchNui("teleportToEntity", { clubId: selectedClubId, entityId: selectedEntityId })}
+                          >
+                            <Navigation className="w-3.5 h-3.5 mr-1" />{locale("entity_teleport")}
+                          </Button>
+                        </div>
                       </>
                     )}
-                    <input
-                      type="text"
+                    <select
                       value={entityDraft.bouncer.ped}
                       onChange={(e) => {
                         setEntityDraft((prev) => ({
@@ -1314,8 +1392,11 @@ export function ClubManagement() {
                         scheduleEntitySave();
                       }}
                       className="w-full h-9 rounded-md border border-border bg-background px-2 text-sm"
-                      placeholder="Ped config id"
-                    />
+                    >
+                      {Object.entries(peds).map(([key, ped]) => (
+                        <option key={key} value={key}>{(ped as any).label || key}</option>
+                      ))}
+                    </select>
                   </div>
                 )}
 
@@ -1328,14 +1409,23 @@ export function ClubManagement() {
                           coords={entityDraft.society.coords}
                           heading={entityDraft.society.heading}
                         />
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => editEntityTransform("main")}
-                          disabled={busyAction}
-                        >
-                          Move Position (Gizmo)
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => editEntityTransform("main")}
+                            disabled={busyAction}
+                          >
+                            <Move className="w-3.5 h-3.5 mr-1" />{locale("entity_move_position")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => fetchNui("teleportToEntity", { clubId: selectedClubId, entityId: selectedEntityId })}
+                          >
+                            <Navigation className="w-3.5 h-3.5 mr-1" />{locale("entity_teleport")}
+                          </Button>
+                        </div>
                       </>
                     )}
                     <div className="text-xs text-muted-foreground">
@@ -1376,8 +1466,7 @@ export function ClubManagement() {
                         </Button>
                       </>
                     )}
-                    <input
-                      type="text"
+                    <select
                       value={entityDraft.clubEntry.ped}
                       onChange={(e) => {
                         setEntityDraft((prev) => ({
@@ -1387,8 +1476,11 @@ export function ClubManagement() {
                         scheduleEntitySave();
                       }}
                       className="w-full h-9 rounded-md border border-border bg-background px-2 text-sm"
-                      placeholder="Bouncer ped config id"
-                    />
+                    >
+                      {Object.entries(peds).map(([key, ped]) => (
+                        <option key={key} value={key}>{(ped as any).label || key}</option>
+                      ))}
+                    </select>
                   </div>
                 )}
 

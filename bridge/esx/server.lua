@@ -27,6 +27,36 @@ function GetPlayerCharacterName(source)
     return xPlayer.getName()
 end
 
+function GetEmployees(jobName, cb)
+    local employees = {}
+    local xPlayers = ESX.GetExtendedPlayers("job", jobName)
+    for _, xPlayer in pairs(xPlayers) do
+        employees[#employees + 1] = {
+            source = xPlayer.source,
+            name = xPlayer.getName(),
+            grade = xPlayer.job.grade,
+            gradeLabel = xPlayer.job.grade_label or ("Grade " .. xPlayer.job.grade),
+            online = true,
+        }
+    end
+    if type(cb) == "function" then cb(employees) end
+    return employees
+end
+
+function GetJobGrades(jobName)
+    local job = ESX.GetJobs()
+    if not job or not job[jobName] or not job[jobName].grades then return {} end
+    local grades = {}
+    for _, grade in pairs(job[jobName].grades) do
+        grades[#grades + 1] = {
+            level = grade.grade,
+            label = grade.label or ("Grade " .. grade.grade),
+        }
+    end
+    table.sort(grades, function(a, b) return a.level < b.level end)
+    return grades
+end
+
 function CanAccessGroup(source, data)
     if not data then return true end
     local pdata = ESX.GetPlayerFromId(source)

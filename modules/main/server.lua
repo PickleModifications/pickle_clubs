@@ -68,6 +68,8 @@ local function BuildClubPacket(data)
         jobs = NormalizeJobs(data.jobs or {}),
         entities = data.entities or {},
         drink_menu = data.drink_menu and type(data.drink_menu) == "table" and data.drink_menu or {},
+        blip = data.blip,
+        entry_settings = data.entry_settings,
     }
 end
 
@@ -165,6 +167,8 @@ local function SyncAllClubs(target)
             jobs = club.jobs,
             entities = club.entities,
             drink_menu = club.drink_menu or {},
+            blip = club.blip,
+            entry_settings = club.entry_settings,
         }
     end
     TriggerClientEvent("pickle_clubs:syncClubs", target or -1, payload)
@@ -248,14 +252,20 @@ function CreateClub(data, cb)
     local jobsJson = json.encode(jobs)
     local drinkMenu = type(data.drink_menu) == "table" and data.drink_menu or {}
     local drinkMenuJson = json.encode(drinkMenu)
+    local blip = type(data.blip) == "table" and data.blip or nil
+    local blipJson = blip and json.encode(blip) or nil
+    local entrySettings = type(data.entry_settings) == "table" and data.entry_settings or nil
+    local entrySettingsJson = entrySettings and json.encode(entrySettings) or nil
     MySQL.Async.insert(
-        "INSERT INTO pickle_clubs (label, description, coords, jobs, drink_menu) VALUES (@label, @description, @coords, @jobs, @drink_menu)",
+        "INSERT INTO pickle_clubs (label, description, coords, jobs, drink_menu, blip, entry_settings) VALUES (@label, @description, @coords, @jobs, @drink_menu, @blip, @entry_settings)",
         {
             ["@label"] = data.label,
             ["@description"] = data.description or "",
             ["@coords"] = json.encode(payloadCoords),
             ["@jobs"] = jobsJson,
             ["@drink_menu"] = drinkMenuJson,
+            ["@blip"] = blipJson,
+            ["@entry_settings"] = entrySettingsJson,
         },
         function(insertId)
             if not insertId then
@@ -270,6 +280,8 @@ function CreateClub(data, cb)
                 jobs = jobs,
                 entities = {},
                 drink_menu = drinkMenu,
+                blip = blip,
+                entry_settings = entrySettings,
             }, false)
             if cb then cb(true, insertId) end
         end
@@ -297,15 +309,19 @@ function UpdateClub(id, data, cb)
     end
     local drinkMenu = (data.drink_menu ~= nil and type(data.drink_menu) == "table") and data.drink_menu or club.drink_menu
     if drinkMenu == nil then drinkMenu = {} end
+    local blip = (data.blip ~= nil) and data.blip or club.blip
+    local entrySettings = (data.entry_settings ~= nil) and data.entry_settings or club.entry_settings
     local updateData = {
         label = data.label or club.label,
         description = data.description or club.description,
         coords = data.coords or club.coords,
         jobs = jobs,
         drink_menu = drinkMenu,
+        blip = blip,
+        entry_settings = entrySettings,
     }
     MySQL.Async.execute(
-        "UPDATE pickle_clubs SET label = @label, description = @description, coords = @coords, jobs = @jobs, drink_menu = @drink_menu WHERE id = @id",
+        "UPDATE pickle_clubs SET label = @label, description = @description, coords = @coords, jobs = @jobs, drink_menu = @drink_menu, blip = @blip, entry_settings = @entry_settings WHERE id = @id",
         {
             ["@id"] = id,
             ["@label"] = updateData.label,
@@ -313,6 +329,8 @@ function UpdateClub(id, data, cb)
             ["@coords"] = json.encode(NormalizeForDb(updateData.coords)),
             ["@jobs"] = json.encode(updateData.jobs or {}),
             ["@drink_menu"] = json.encode(updateData.drink_menu or {}),
+            ["@blip"] = updateData.blip and json.encode(updateData.blip) or nil,
+            ["@entry_settings"] = updateData.entry_settings and json.encode(updateData.entry_settings) or nil,
         },
         function(affectedRows)
             if affectedRows and affectedRows > 0 then
@@ -321,6 +339,8 @@ function UpdateClub(id, data, cb)
                 club.coords = updateData.coords
                 club.jobs = updateData.jobs
                 club.drink_menu = updateData.drink_menu
+                club.blip = updateData.blip
+                club.entry_settings = updateData.entry_settings
                 SyncAllClubs(-1)
                 if cb then cb(true) end
             else
@@ -461,6 +481,10 @@ function LoadAllClubs()
                 local jobsDecoded = (type(jobsRaw) == "string" and json.decode(jobsRaw)) or (type(jobsRaw) == "table" and jobsRaw) or {}
                 local drinkMenuRaw = row.drink_menu
                 local drinkMenu = (type(drinkMenuRaw) == "string" and json.decode(drinkMenuRaw)) or (type(drinkMenuRaw) == "table" and drinkMenuRaw) or {}
+                local blipRaw = row.blip
+                local blip = (type(blipRaw) == "string" and json.decode(blipRaw)) or (type(blipRaw) == "table" and blipRaw) or nil
+                local entrySettingsRaw = row.entry_settings
+                local entrySettings = (type(entrySettingsRaw) == "string" and json.decode(entrySettingsRaw)) or (type(entrySettingsRaw) == "table" and entrySettingsRaw) or nil
                 loaded[row.id] = {
                     id = row.id,
                     label = row.label,
@@ -469,6 +493,8 @@ function LoadAllClubs()
                     jobs = NormalizeJobs(jobsDecoded),
                     entities = {},
                     drink_menu = drinkMenu,
+                    blip = blip,
+                    entry_settings = entrySettings,
                 }
             end
             for i = 1, #(entityRows or {}) do
@@ -710,7 +736,7 @@ RegisterNetEvent("pickle_clubs:initializePlayer", function()
     SyncAllClubs(src)
 end)
 
-RegisterCommand("managebar", function(source)
+RegisterCommand("clubs", function(source)
     if source == 0 then return end
     if not IsPlayerAdmin(source) then
         ShowNotification(source, "You don't have permission to use this command")
@@ -733,6 +759,8 @@ MySQL.ready(function()
         )
     ]], {}, function()
         MySQL.Async.execute("ALTER TABLE pickle_clubs ADD COLUMN IF NOT EXISTS drink_menu JSON NULL", {}, function() end)
+        MySQL.Async.execute("ALTER TABLE pickle_clubs ADD COLUMN IF NOT EXISTS blip JSON NULL", {}, function() end)
+        MySQL.Async.execute("ALTER TABLE pickle_clubs ADD COLUMN IF NOT EXISTS entry_settings JSON NULL", {}, function() end)
         MySQL.Async.execute([[
             CREATE TABLE IF NOT EXISTS pickle_club_entities (
                 id INT AUTO_INCREMENT PRIMARY KEY,
