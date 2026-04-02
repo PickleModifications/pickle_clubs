@@ -86,6 +86,53 @@ local function IsVectorLike(value)
     return type(x) == "number" and type(y) == "number" and type(z) == "number"
 end
 
+local function DeepCopyTable(t)
+    if type(t) ~= "table" then return t end
+    local o = {}
+    for k, v in pairs(t) do
+        o[k] = DeepCopyTable(v)
+    end
+    return o
+end
+
+-- Merge incoming entity fields into existing so partial updates (e.g. move position) do not drop flags like bouncer.vipMode.
+local function MergeNestedEntity(existing, incoming)
+    if type(existing) ~= "table" then existing = {} end
+    if type(incoming) ~= "table" then return DeepCopyTable(existing) end
+    local out = DeepCopyTable(existing)
+    for k, v in pairs(incoming) do
+        if IsVectorLike(v) then
+            out[k] = v
+        elseif type(v) == "table" and type(out[k]) == "table" and not IsVectorLike(out[k]) then
+            out[k] = MergeNestedEntity(out[k], v)
+        else
+            out[k] = v
+        end
+    end
+    return out
+end
+
+local function MergeEntityUpdate(existing, incoming)
+    if type(existing) ~= "table" or type(incoming) ~= "table" then return incoming or existing end
+    local out = DeepCopyTable(existing)
+    for k, v in pairs(incoming) do
+        if k == "type" then
+            out[k] = v
+        elseif k == "bouncer" and type(v) == "table" then
+            out.bouncer = MergeNestedEntity(out.bouncer, v)
+        elseif k == "bartender" and type(v) == "table" then
+            out.bartender = MergeNestedEntity(out.bartender, v)
+        elseif k == "society" and type(v) == "table" then
+            out.society = MergeNestedEntity(out.society, v)
+        elseif k == "eject" and type(v) == "table" then
+            out.eject = MergeNestedEntity(out.eject, v)
+        else
+            out[k] = v
+        end
+    end
+    return out
+end
+
 local function ValidateEntityData(entityType, entityData)
     if type(entityData) ~= "table" then
         return false, "Invalid entity payload"
@@ -118,6 +165,9 @@ local function ValidateEntityData(entityType, entityData)
         end
         if type(bouncer.ped) ~= "string" or bouncer.ped == "" then
             return false, "Bouncer ped id is required"
+        end
+        if bouncer.vipMode ~= nil and type(bouncer.vipMode) ~= "boolean" then
+            return false, "vipMode must be a boolean"
         end
         return true
     end
@@ -415,13 +465,19 @@ function UpdateClubEntity(clubId, entityId, entityData, cb)
         if cb then cb(false, "Entity not found") end
         return
     end
-    local nextType = entityData.type or entity.type
-    local valid, validationMessage = ValidateEntityData(nextType, entityData)
+    local merged = MergeEntityUpdate(entity, entityData)
+    local nextType = merged.type or entityData.type or entity.type
+    merged.type = nextType
+    if merged.bouncer and merged.bouncer.vipMode ~= nil then
+        local v = merged.bouncer.vipMode
+        merged.bouncer.vipMode = (v == true or v == 1 or v == "1" or v == "true")
+    end
+    local valid, validationMessage = ValidateEntityData(nextType, merged)
     if not valid then
         if cb then cb(false, validationMessage or "Invalid entity payload") end
         return
     end
-    local payload = NormalizeForDb(entityData)
+    local payload = NormalizeForDb(merged)
     payload.type = nil
     MySQL.Async.execute(
         "UPDATE pickle_club_entities SET entity_type = @entity_type, entity_data = @entity_data WHERE club_id = @club_id AND entity_key = @entity_key",
@@ -434,7 +490,7 @@ function UpdateClubEntity(clubId, entityId, entityData, cb)
         function(affectedRows)
             if affectedRows and affectedRows > 0 then
                 StopClubEntity(clubId, entityId)
-                club.entities[entityId] = entityData
+                club.entities[entityId] = merged
                 club.entities[entityId].type = nextType
                 StartClubEntity(clubId, entityId)
                 SyncAllClubs(-1)

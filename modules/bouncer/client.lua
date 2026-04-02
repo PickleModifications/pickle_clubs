@@ -3,6 +3,21 @@ local BouncerInteractions = {} -- [clubId][entityId] -> interactionIndex
 local ClosestBouncer = nil
 local ThrowOutScenes = {}
 local PLAYING_BOUNCER_SCENE = false
+
+-- Entity JSON may store coords as plain tables; normalize for vector math.
+local function ToVector3(value, fallback)
+    if type(value) == "vector3" then return value end
+    if type(value) == "table" then
+        local x = value.x or value[1]
+        local y = value.y or value[2]
+        local z = value.z or value[3]
+        if x and y and z then
+            return vector3(x, y, z)
+        end
+    end
+    return fallback
+end
+
 function ThrowOutPlayerScene(clubId, entityId, id)
     if ThrowOutScenes[id] then 
         for i=1, #ThrowOutScenes[id].entities do
@@ -72,10 +87,12 @@ function RenderBouncer(id, entityId)
     if not club then return end
     local entity = club.entities[entityId]
     if not entity then return end
+    local fallbackCoords = ToVector3(club.coords, vector3(0.0, 0.0, 0.0))
+    local bouncerCoords = ToVector3(entity.bouncer.coords, fallbackCoords)
     local entry = {
         bouncer = {
             ped = nil,
-            coords = entity.bouncer.coords,
+            coords = bouncerCoords,
             heading = entity.bouncer.heading,
         },
     }
@@ -85,7 +102,7 @@ function RenderBouncer(id, entityId)
     local interactionIndex = CreateInteraction({
         label = "Bouncer",
         icon = Config.TargetIcons.bouncer,
-        coords = entity.bouncer.coords + vector3(0.0, 0.0, 1.0),
+        coords = bouncerCoords + vector3(0.0, 0.0, 1.0),
         heading = entity.bouncer.heading,
     }, function()
         lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
@@ -109,7 +126,7 @@ function RenderBouncer(id, entityId)
         end)
     end)
     BouncerInteractions[id][entityId] = interactionIndex
-    entry.bouncer.ped = CreateClubNPC(entity.bouncer.ped, entity.bouncer.coords, entity.bouncer.heading)
+    entry.bouncer.ped = CreateClubNPC(entity.bouncer.ped, bouncerCoords, entity.bouncer.heading)
     Bouncers[id][entityId] = entry
 end
 
@@ -132,6 +149,37 @@ end
 
 function GetBouncer(id, entityId)
     return Bouncers[id] and Bouncers[id][entityId]
+end
+
+local function IsBouncerVipModeActive(bouncer)
+    if not bouncer or type(bouncer) ~= "table" then return false end
+    local v = bouncer.vipMode
+    return v == true or v == 1 or v == "1" or v == "true"
+end
+
+-- Patrol rule for this bouncer entity: VIP mode only allows VIP pass; otherwise any club pass (standard or VIP).
+function PlayerPassesBouncerPatrol(clubId, entityId)
+    local club = Clubs[clubId]
+    if not club or not club.entities or not club.entities[entityId] then return true end
+    local ent = club.entities[entityId]
+    if ent.type ~= "bouncer" or not ent.bouncer then return true end
+    if IsBouncerVipModeActive(ent.bouncer) then
+        return HasVipClubPass(clubId)
+    end
+    return CanEnterClub(clubId) and true or false
+end
+
+-- Bypass patrol (police, club staff, etc.). VIP mode can optionally require staff to have a VIP pass too.
+local function BouncerPatrolAllowsBypass(clubId, entityId)
+    if Config.BypassJobs and next(Config.BypassJobs) and CanAccessGroup(Config.BypassJobs) then
+        return true
+    end
+    local club = Clubs[clubId]
+    local ent = club and club.entities and club.entities[entityId]
+    if ent and ent.type == "bouncer" and ent.bouncer and IsBouncerVipModeActive(ent.bouncer) and Config.BouncerVipModeIgnoreJobAccess then
+        return false
+    end
+    return PlayerHasClubJobAccess(clubId)
 end
 
 -- Check if the player's job matches any of the club's assigned jobs or bypass jobs
@@ -158,7 +206,7 @@ end
 function BouncerThread(id, entityId)
     local progressPerTick = 1
     local data = GetBouncer(id, entityId)
-    if CanEnterClub(id) or PLAYING_BOUNCER_SCENE or PlayerHasClubJobAccess(id) or IsBouncerImmune(GetPlayerServerId(PlayerId())) then return end
+    if PlayerPassesBouncerPatrol(id, entityId) or PLAYING_BOUNCER_SCENE or BouncerPatrolAllowsBypass(id, entityId) or IsBouncerImmune(GetPlayerServerId(PlayerId())) then return end
     if not data then return end
     if not ClosestBouncer or ClosestBouncer.clubId ~= id or ClosestBouncer.entityId ~= entityId then
         ClosestBouncer = {

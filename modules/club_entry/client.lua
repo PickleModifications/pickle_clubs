@@ -269,6 +269,11 @@ function CanEnterClub(id)
     return ClubPasses[id]
 end
 
+-- ClubPasses is local to this file; bouncer module uses this for VIP patrol mode.
+function HasVipClubPass(id)
+    return ClubPasses[id] == "vip"
+end
+
 RegisterNetEvent("pickle_clubs:updateClubEntry", function(id, entityId, entry)
     if not entry then return end
     local localEntry = GetClubEntry(id, entityId)

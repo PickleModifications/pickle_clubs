@@ -32,6 +32,7 @@ type BouncerEntity = {
     ped: string;
     coords?: Vec3;
     heading?: number;
+    vipMode?: boolean;
   };
 };
 
@@ -110,6 +111,7 @@ interface EntityEditorState {
     ped: string;
     coords: Vec3;
     heading: number;
+    vipMode: boolean;
   };
   clubEntry: {
     ped: string;
@@ -192,6 +194,7 @@ function createEmptyEntityDraft(): EntityEditorState {
       ped: "bouncer_1",
       coords: { ...DEFAULT_VEC3 },
       heading: 0,
+      vipMode: false,
     },
     clubEntry: {
       ped: "bouncer_1",
@@ -235,6 +238,7 @@ function createEntityDraft(club: ClubSummary, entityId?: string): EntityEditorSt
     base.bouncer.ped = typeof bouncer.ped === "string" ? bouncer.ped : "bouncer_1";
     base.bouncer.coords = toVec3(bouncer.coords, toVec3(club.coords, DEFAULT_VEC3));
     base.bouncer.heading = typeof bouncer.heading === "number" ? bouncer.heading : 0;
+    base.bouncer.vipMode = bouncer.vipMode === true;
   } else if (entityType === "club_entry") {
     const bouncer = (entity.bouncer || {}) as Record<string, unknown>;
     const eject = (entity.eject || {}) as Record<string, unknown>;
@@ -598,7 +602,7 @@ export function ClubManagement() {
       if (!draft.bouncer.ped.trim()) return null;
       const base: ClubEntity = {
         type: "bouncer",
-        bouncer: { ped: draft.bouncer.ped.trim() },
+        bouncer: { ped: draft.bouncer.ped.trim(), vipMode: draft.bouncer.vipMode },
       };
       if (includeTransform) {
         (base as BouncerEntity).bouncer.coords = draft.bouncer.coords;
@@ -1402,6 +1406,24 @@ export function ClubManagement() {
                         <option key={key} value={key}>{(ped as any).label || key}</option>
                       ))}
                     </select>
+                    <label className="flex items-start gap-2 cursor-pointer text-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 rounded border-border"
+                        checked={entityDraft.bouncer.vipMode}
+                        onChange={(e) => {
+                          setEntityDraft((prev) => ({
+                            ...prev,
+                            bouncer: { ...prev.bouncer, vipMode: e.target.checked },
+                          }));
+                          scheduleEntitySave();
+                        }}
+                      />
+                      <span>
+                        <span className="font-medium">{locale("entity_bouncer_vip_mode")}</span>
+                        <span className="block text-xs text-muted-foreground">{locale("entity_bouncer_vip_mode_desc")}</span>
+                      </span>
+                    </label>
                   </div>
                 )}
 

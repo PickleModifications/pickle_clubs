@@ -41,6 +41,9 @@ Config.ClubEntry = {
     vipEnabled = true, -- Allow VIP pass purchases
 }
 
+-- VIP-mode bouncers normally still ignore players with the club's job (staff). Set true so staff must also have a VIP pass (BypassJobs e.g. police still apply first).
+Config.BouncerVipModeIgnoreJobAccess = false
+
 -- Default drinks added to new clubs. Keys are drink IDs, values match the drink_menu format.
 -- These are also used to generate item install files in __INSTALL/Items/.
 Config.DefaultDrinks = {

@@ -611,6 +611,7 @@ local function BuildBouncerEntityFromInput(baseEntity, defaultCoords, defaultHea
 
     local input = lib.inputDialog("Bouncer Settings", {
         { type = "input", label = "Ped Config Id", description = "Config.Peds key (example: bouncer_1)", default = current.ped or "bouncer_1", required = true },
+        { type = "checkbox", label = "VIP Mode", description = "Only VIP pass holders are allowed past this bouncer", checked = current.vipMode == true },
     })
     if not input then return nil end
     local pedId = input[1]
@@ -624,6 +625,7 @@ local function BuildBouncerEntityFromInput(baseEntity, defaultCoords, defaultHea
             ped = pedId,
             coords = coords,
             heading = heading,
+            vipMode = input[2] == true,
         },
     }
 end
@@ -769,12 +771,14 @@ local function UpdateBouncerSettings(entity)
     local current = entity.bouncer or {}
     local input = lib.inputDialog("Bouncer Settings", {
         { type = "input", label = "Ped Config Id", description = "Config.Peds key (example: bouncer_1)", default = current.ped or "bouncer_1", required = true },
+        { type = "checkbox", label = "VIP Mode", description = "Only VIP pass holders are allowed past this bouncer", checked = current.vipMode == true },
     })
     if not input then return nil end
     
     local updated = DeepCopy(entity)
     updated.bouncer = updated.bouncer or {}
     updated.bouncer.ped = input[1]
+    updated.bouncer.vipMode = input[2] == true
     return updated
 end
 
