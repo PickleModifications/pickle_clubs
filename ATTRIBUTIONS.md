@@ -2,9 +2,6 @@
 
 Thank you to the following who helped make this happen!
 
-# kadfilm (FX Lighting)
+# NukePUG (https://forum.cfx.re/t/free-props-destillery/5274460/9)
 
-https://www.youtube.com/@KADFILM
-
-Really appreciate kad for allowing me to use their lighting as a dependency - big shoutout to them!
-
+Creating the coaster 3D models!
