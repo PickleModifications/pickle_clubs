@@ -44,6 +44,10 @@ Config.ClubEntry = {
 -- VIP-mode bouncers normally still ignore players with the club's job (staff). Set true so staff must also have a VIP pass (BypassJobs e.g. police still apply first).
 Config.BouncerVipModeIgnoreJobAccess = false
 
+Config.Bouncer = {
+    enableEscorting = true, -- Allow bouncers to escort other players. Set false to disable the escort target/menu option entirely.
+}
+
 -- Default drinks added to new clubs. Keys are drink IDs, values match the drink_menu format.
 -- These are also used to generate item install files in __INSTALL/Items/.
 Config.DefaultDrinks = {
@@ -123,6 +127,7 @@ Config.Bartender = {
     societyCut = 0.30, -- Percentage of sales that goes to the society account (0.0 to 1.0). The rest goes to the bartender.
     playerOrderExpireSeconds = 60, -- Time before player orders expire (default: same as orderTimerDuration)
     playerOrderPayment = 0, -- If > 0, take cash from ordering player; 0 = free drinks
+    requirePlayerBartender = false, -- If true, players cannot self-service drinks; a player bartender must be actively manning the station to fulfill orders.
     registerModel = `vw_prop_casino_till`, -- Model used for bartender placement/management gizmo
     defaultBlip = {
         name = "Bartending Station",

@@ -51,17 +51,56 @@ RegisterNetEvent("pickle_clubs:throwOutPlayer", function(id)
     ThrowOutPlayer(source, id)
 end)
 
+-- Returns true if the bouncer source is within Config.RenderDistance of any
+-- bouncer-type entity belonging to a club whose primary job they hold.
+local function BouncerIsInZone(bouncerSource)
+    local ped = GetPlayerPed(bouncerSource)
+    if not ped or ped == 0 then return false end
+    local coords = GetEntityCoords(ped)
+    local jobName = GetPlayerJobName(bouncerSource)
+    if not jobName then return false end
+    for clubId, club in pairs(Clubs) do
+        if club and club.entities and club.jobs then
+            local jobMatch = false
+            for i = 1, #club.jobs do
+                if club.jobs[i].name == jobName then jobMatch = true; break end
+            end
+            if jobMatch then
+                for _, entity in pairs(club.entities) do
+                    if entity.type == "bouncer" and entity.bouncer and entity.bouncer.coords then
+                        local ec = entity.bouncer.coords
+                        local ex = ec.x or (type(ec) == "table" and ec[1])
+                        local ey = ec.y or (type(ec) == "table" and ec[2])
+                        local ez = ec.z or (type(ec) == "table" and ec[3])
+                        if ex and ey and ez then
+                            if #(coords - vector3(ex, ey, ez)) < Config.RenderDistance then
+                                return true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
 -- Escort: attach victim to bouncer
 RegisterNetEvent("pickle_clubs:startEscort", function(targetSource, bouncerSource)
+    if not (Config.Bouncer and Config.Bouncer.enableEscorting) then return end
+    local src = source
     targetSource = tonumber(targetSource)
     bouncerSource = tonumber(bouncerSource)
     if not targetSource or not bouncerSource then return end
+    if bouncerSource ~= src then return end
+    if not BouncerIsInZone(bouncerSource) then return end
     ShowNotification(targetSource, "You are being escorted by a bouncer")
     TriggerClientEvent("pickle_clubs:escortAttach", targetSource, bouncerSource)
 end)
 
 -- Escort: fling victim
 RegisterNetEvent("pickle_clubs:flingEscort", function(targetSource, forwardX, forwardY)
+    if not (Config.Bouncer and Config.Bouncer.enableEscorting) then return end
     targetSource = tonumber(targetSource)
     if not targetSource then return end
     TriggerClientEvent("pickle_clubs:escortFling", targetSource, forwardX, forwardY)

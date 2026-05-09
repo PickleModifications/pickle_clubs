@@ -105,8 +105,8 @@ function RenderBouncer(id, entityId)
         coords = bouncerCoords + vector3(0.0, 0.0, 1.0),
         heading = entity.bouncer.heading,
     }, function()
-        lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
-            if isAdmin then
+        lib.callback("pickle_clubs:canManageClub", false, function(canManage)
+            if canManage then
                 local contextId = ("bouncer_interact_%s_%s"):format(id, entityId)
                 lib.registerContext({
                     id = contextId,
@@ -123,7 +123,7 @@ function RenderBouncer(id, entityId)
                 })
                 lib.showContext(contextId)
             end
-        end)
+        end, id)
     end)
     BouncerInteractions[id][entityId] = interactionIndex
     entry.bouncer.ped = CreateClubNPC(entity.bouncer.ped, bouncerCoords, entity.bouncer.heading)
@@ -381,8 +381,31 @@ end
 
 -- ===== ESCORT SYSTEM =====
 
+-- True if the local player is within Config.RenderDistance of any bouncer entity
+-- belonging to a club whose job they have access to.
+local function IsPlayerInBouncerZone()
+    local pcoords = GetEntityCoords(PlayerPedId())
+    for clubId, club in pairs(Clubs) do
+        if club and club.entities and PlayerHasClubJobAccess(clubId) then
+            for _, entity in pairs(club.entities) do
+                if entity.type == "bouncer" and entity.bouncer and entity.bouncer.coords then
+                    if #(pcoords - ToVector3(entity.bouncer.coords, vector3(0.0, 0.0, 0.0))) < Config.RenderDistance then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
 local function StartEscort(target)
     if EscortedPlayer then return end
+    if not (Config.Bouncer and Config.Bouncer.enableEscorting) then return end
+    if not IsPlayerInBouncerZone() then
+        ShowNotification(_L("bouncer_escort_too_far"))
+        return
+    end
     EscortedPlayer = target
     EscortImmunePlayers[target.serverId] = true
     local myServerId = GetPlayerServerId(PlayerId())
@@ -513,30 +536,32 @@ local function OpenBouncerActionsMenu()
 
     local options = {}
 
-    if EscortedPlayer then
-        table.insert(options, {
-            title = _L("bouncer_release"),
-            description = _L("bouncer_release_desc"),
-            icon = Config.TargetIcons.release,
-            onSelect = function()
-                StopEscort()
-                ShowNotification(_L("bouncer_escort_released"))
-            end,
-        })
-    else
-        table.insert(options, {
-            title = _L("bouncer_escort"),
-            description = _L("bouncer_escort_desc"),
-            icon = Config.TargetIcons.escort,
-            onSelect = function()
-                local target = GetClosestPlayer(3.0)
-                if not target then
-                    ShowNotification(_L("bouncer_no_player"))
-                    return
-                end
-                StartEscort(target)
-            end,
-        })
+    if Config.Bouncer and Config.Bouncer.enableEscorting then
+        if EscortedPlayer then
+            table.insert(options, {
+                title = _L("bouncer_release"),
+                description = _L("bouncer_release_desc"),
+                icon = Config.TargetIcons.release,
+                onSelect = function()
+                    StopEscort()
+                    ShowNotification(_L("bouncer_escort_released"))
+                end,
+            })
+        else
+            table.insert(options, {
+                title = _L("bouncer_escort"),
+                description = _L("bouncer_escort_desc"),
+                icon = Config.TargetIcons.escort,
+                onSelect = function()
+                    local target = GetClosestPlayer(3.0)
+                    if not target then
+                        ShowNotification(_L("bouncer_no_player"))
+                        return
+                    end
+                    StartEscort(target)
+                end,
+            })
+        end
     end
 
     table.insert(options, {
@@ -574,7 +599,8 @@ if Config.UseTarget and AddTargetGlobalPlayer then
             label = _L("bouncer_escort"),
             icon = Config.TargetIcons.escort,
             interactCheck = function(targetServerId)
-                return IsPlayerBouncer() and not EscortedPlayer
+                if not (Config.Bouncer and Config.Bouncer.enableEscorting) then return false end
+                return IsPlayerBouncer() and not EscortedPlayer and IsPlayerInBouncerZone()
             end,
             onSelected = function(targetServerId)
                 for _, playerId in ipairs(GetActivePlayers()) do

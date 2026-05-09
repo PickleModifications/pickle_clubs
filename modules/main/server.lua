@@ -626,7 +626,7 @@ end)
 
 RegisterNetEvent("pickle_clubs:updateClub", function(id, payload)
     local src = source
-    if not IsPlayerAdmin(src) then return end
+    if not CanManageClub(src, id) then return end
     UpdateClub(id, payload, function(success, result)
         if success then
             ShowNotification(src, "Club updated")
@@ -650,7 +650,7 @@ end)
 
 RegisterNetEvent("pickle_clubs:createClubEntity", function(clubId, entityType, entityData)
     local src = source
-    if not IsPlayerAdmin(src) then return end
+    if not CanManageClub(src, clubId) then return end
     CreateClubEntity(clubId, entityType, entityData, nil, function(success, result)
         if success then
             ShowNotification(src, ("Added %s entity (%s)"):format(entityType, result))
@@ -662,7 +662,7 @@ end)
 
 RegisterNetEvent("pickle_clubs:updateClubEntity", function(clubId, entityId, entityData)
     local src = source
-    if not IsPlayerAdmin(src) then return end
+    if not CanManageClub(src, clubId) then return end
     UpdateClubEntity(clubId, entityId, entityData, function(success, result)
         if success then
             ShowNotification(src, "Entity updated")
@@ -674,7 +674,7 @@ end)
 
 RegisterNetEvent("pickle_clubs:deleteClubEntity", function(clubId, entityId)
     local src = source
-    if not IsPlayerAdmin(src) then return end
+    if not CanManageClub(src, clubId) then return end
     DeleteClubEntity(clubId, entityId, function(success)
         if success then
             ShowNotification(src, "Entity deleted")
@@ -684,7 +684,7 @@ RegisterNetEvent("pickle_clubs:deleteClubEntity", function(clubId, entityId)
     end)
 end)
 
-local function GetPrimaryJobName(club)
+function GetPrimaryJobName(club)
     local jobs = club and club.jobs or {}
     for i = 1, #jobs do
         if jobs[i].primary and type(jobs[i].name) == "string" and jobs[i].name ~= "" then
@@ -692,6 +692,24 @@ local function GetPrimaryJobName(club)
         end
     end
     return nil
+end
+
+function CanManageClub(source, clubId)
+    if IsPlayerAdmin(source) then return true end
+    local club = Clubs[clubId]
+    if not club then return false end
+    local primary = GetPrimaryJobName(club)
+    if not primary then return false end
+    return IsPlayerJobBoss(source, primary)
+end
+
+function PlayerCanManageAnyClub(source)
+    if IsPlayerAdmin(source) then return true end
+    for clubId, club in pairs(Clubs) do
+        local primary = GetPrimaryJobName(club)
+        if primary and IsPlayerJobBoss(source, primary) then return true end
+    end
+    return false
 end
 
 local function PlayerHasClubAccess(source, clubId)
@@ -770,7 +788,11 @@ lib.callback.register("pickle_clubs:societyWithdraw", function(source, clubId, a
 end)
 
 lib.callback.register("pickle_clubs:checkIsAdmin", function(source)
-    return IsPlayerAdmin(source)
+    return IsPlayerAdmin(source) or PlayerCanManageAnyClub(source)
+end)
+
+lib.callback.register("pickle_clubs:canManageClub", function(source, clubId)
+    return CanManageClub(source, clubId)
 end)
 
 AddEventHandler("playerDropped", function()

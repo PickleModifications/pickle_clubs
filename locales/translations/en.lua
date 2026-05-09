@@ -68,4 +68,5 @@ Language["en"] = {
     bouncer_escort_started = "Escorting player. Press E to throw.",
     bouncer_escort_thrown = "Player has been thrown out",
     bouncer_escort_released = "Player released",
+    bouncer_escort_too_far = "You must be near the bouncer station to escort someone.",
 }

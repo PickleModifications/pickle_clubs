@@ -63,8 +63,8 @@ function RenderClubEntry(id, entityId)
         coords = entity.bouncer.coords + vector3(0.0, 0.0, 1.0),
         heading = entity.bouncer.heading,
     }, function()
-        lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
-            if isAdmin then
+        lib.callback("pickle_clubs:canManageClub", false, function(canManage)
+            if canManage then
                 local contextId = ("club_entry_interact_%s_%s"):format(id, entityId)
                 lib.registerContext({
                     id = contextId,
@@ -90,7 +90,7 @@ function RenderClubEntry(id, entityId)
             else
                 PromptCEL(id, entityId)
             end
-        end)
+        end, id)
     end)
     ClubEntryInteractions[id][entityId] = interactionIndex
     entry.bouncer.ped = CreateClubNPC(entity.bouncer.ped, entity.bouncer.coords, entity.bouncer.heading)

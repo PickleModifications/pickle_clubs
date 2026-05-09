@@ -769,6 +769,9 @@ lib.callback.register("pickle_clubs:canPlacePlayerOrder", function(source, stati
     if not GetStation(stationId) then
         return false, "Station not found"
     end
+    if Config.Bartender.requirePlayerBartender and not IsStationControlled(stationId, "interaction") then
+        return false, "A bartender must be present to take your order"
+    end
     -- Allow ordering even without a bartender (self-service)
     if IsStationControlled(stationId, "interaction") then
         local stationData = StationData[stationId]
@@ -783,6 +786,10 @@ RegisterNetEvent("pickle_clubs:placePlayerOrder", function(stationId, drinkKey)
     local source = source
     if not GetStation(stationId) then
         ShowNotification(source, "Station not found")
+        return
+    end
+    if Config.Bartender.requirePlayerBartender and not IsStationControlled(stationId, "interaction") then
+        ShowNotification(source, "A bartender must be present to take your order")
         return
     end
     local menu = GetClubDrinkMenuForStation(stationId)

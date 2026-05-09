@@ -193,8 +193,8 @@ local function RenderSociety(clubId, entityId)
         coords = interactCoords,
         heading = heading,
     }, function()
-        lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
-            if isAdmin then
+        lib.callback("pickle_clubs:canManageClub", false, function(canManage)
+            if canManage then
                 local options = {
                     {
                         title = "Manage",
@@ -221,7 +221,7 @@ local function RenderSociety(clubId, entityId)
             else
                 OpenSocietyPanel(clubId)
             end
-        end)
+        end, clubId)
     end)
     SocietyInteractions[clubId][entityId] = interactionIndex
 end

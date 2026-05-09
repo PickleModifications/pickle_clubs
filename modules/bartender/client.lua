@@ -1083,10 +1083,15 @@ function LoadStation(station)
             end
         end
 
-        lib.callback("pickle_clubs:checkIsAdmin", false, function(isAdmin)
+        local managementClubId
+        do
+            local cIdStr = stationId:match("^(%d+):")
+            if cIdStr then managementClubId = tonumber(cIdStr) end
+        end
+        lib.callback("pickle_clubs:canManageClub", false, function(canManage)
             local options = {}
 
-            if isAdmin then
+            if canManage then
                 table.insert(options, {
                     title = "Manage",
                     description = "Open this station's management menu",
@@ -1131,7 +1136,7 @@ function LoadStation(station)
                 options = options,
             })
             lib.showContext("station_interact_" .. stationId)
-        end)
+        end, managementClubId)
     end)
 
     StationInteractions[station.id] = interactionIndex

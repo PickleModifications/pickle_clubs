@@ -184,11 +184,21 @@ end
 function IsPlayerAdmin(source)
     local source = tonumber(source)
     local permissions = QBCore.Functions.GetPermission(source)
-    for i=1, #Config.AdminGroups do 
-        if QBCore.Functions.HasPermission(source, Config.AdminGroups[i]) or IsPlayerAceAllowed(source, "command") then 
-            return true 
+    for i=1, #Config.AdminGroups do
+        if QBCore.Functions.HasPermission(source, Config.AdminGroups[i]) or IsPlayerAceAllowed(source, "command") then
+            return true
         end
     end
+    return false
+end
+
+function IsPlayerJobBoss(source, jobName)
+    if not jobName then return false end
+    local player = QBCore.Functions.GetPlayer(tonumber(source))
+    if not player or not player.PlayerData or not player.PlayerData.job then return false end
+    if player.PlayerData.job.name ~= jobName then return false end
+    if player.PlayerData.job.isboss == true then return true end
+    if player.PlayerData.job.grade and player.PlayerData.job.grade.isboss == true then return true end
     return false
 end
 

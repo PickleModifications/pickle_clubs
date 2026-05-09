@@ -2,7 +2,7 @@ fx_version "cerulean"
 game "gta5"
 author "Pickle Mods"
 description "The best clubs resource for FiveM."
-version "v1.0.0"
+version "v1.1.0"
 data_file 'DLC_ITYP_REQUEST' 'npds_pickle_coasters.ytyp'
 
 

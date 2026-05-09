@@ -168,10 +168,28 @@ function IsPlayerAdmin(source)
     local xPlayer = ESX.GetPlayerFromId(source)
     if not xPlayer then return false end
     local group = xPlayer.getGroup()
-    for i=1, #Config.AdminGroups do 
+    for i=1, #Config.AdminGroups do
         if group == Config.AdminGroups[i] then
-            return true 
+            return true
         end
+    end
+    return false
+end
+
+function IsPlayerJobBoss(source, jobName)
+    if not jobName then return false end
+    local xPlayer = ESX.GetPlayerFromId(tonumber(source))
+    if not xPlayer or not xPlayer.job then return false end
+    if xPlayer.job.name ~= jobName then return false end
+    if xPlayer.job.grade_name == "boss" then return true end
+    local jobs = ESX.GetJobs and ESX.GetJobs() or nil
+    if jobs and jobs[jobName] and jobs[jobName].grades then
+        local maxGrade = -1
+        for _, g in pairs(jobs[jobName].grades) do
+            local lvl = tonumber(g.grade) or -1
+            if lvl > maxGrade then maxGrade = lvl end
+        end
+        if maxGrade >= 0 and tonumber(xPlayer.job.grade) == maxGrade then return true end
     end
     return false
 end
