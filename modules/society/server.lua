@@ -10,32 +10,32 @@ local function GetPrimaryJobName(club)
     return nil
 end
 
-local function PlayerHasClubAccess(source, clubId)
-    local club = Clubs[clubId]
-    if not club or not club.jobs then return false end
-    local jobName = GetPlayerJobName(source)
-    if not jobName then return false end
-    for i = 1, #club.jobs do
-        if club.jobs[i].name == jobName then
-            return true
-        end
-    end
-    return false
+-- Authoritative management gate: admin OR boss-grade of the club's primary owning job.
+-- Defers to CanManageClub (defined in modules/main/server.lua) which checks
+-- IsPlayerAdmin OR IsPlayerJobBoss(source, primaryJob).
+local function PlayerCanManage(source, clubId)
+    if type(CanManageClub) ~= "function" then return false end
+    return CanManageClub(source, clubId) == true
 end
 
 -- Get employees for a club's primary job
 lib.callback.register("pickle_clubs:getEmployees", function(source, clubId)
-    if not PlayerHasClubAccess(source, clubId) then return {} end
+    if not PlayerCanManage(source, clubId) then return {} end
     local club = Clubs[clubId]
     local jobName = GetPrimaryJobName(club)
     if not jobName or not GetEmployees then return {} end
-    local employees = GetEmployees(jobName)
-    return employees or {}
+    local employees = GetEmployees(jobName) or {}
+    for _, emp in ipairs(employees) do
+        if tonumber(emp.source) == tonumber(source) then
+            emp.isSelf = true
+        end
+    end
+    return employees
 end)
 
 -- Get job grades for a club's primary job
 lib.callback.register("pickle_clubs:getJobGrades", function(source, clubId)
-    if not PlayerHasClubAccess(source, clubId) then return {} end
+    if not PlayerCanManage(source, clubId) then return {} end
     local club = Clubs[clubId]
     local jobName = GetPrimaryJobName(club)
     if not jobName or not GetJobGrades then return {} end
@@ -44,23 +44,25 @@ end)
 
 -- Set employee grade
 lib.callback.register("pickle_clubs:setEmployeeGrade", function(source, clubId, targetSource, grade)
-    if not PlayerHasClubAccess(source, clubId) then return false, "No access" end
+    if not PlayerCanManage(source, clubId) then return false, "No access" end
     local club = Clubs[clubId]
     local jobName = GetPrimaryJobName(club)
     if not jobName or not SetPlayerJob then return false, "No job configured" end
     targetSource = tonumber(targetSource)
     grade = tonumber(grade)
     if not targetSource or not grade then return false, "Invalid parameters" end
+    if targetSource == source then return false, "You can't change your own rank" end
     SetPlayerJob(targetSource, jobName, grade)
     return true
 end)
 
 -- Fire employee (set to unemployed)
 lib.callback.register("pickle_clubs:fireEmployee", function(source, clubId, targetSource)
-    if not PlayerHasClubAccess(source, clubId) then return false, "No access" end
+    if not PlayerCanManage(source, clubId) then return false, "No access" end
     if not SetPlayerJob then return false, "Not supported" end
     targetSource = tonumber(targetSource)
     if not targetSource then return false, "Invalid target" end
+    if targetSource == source then return false, "You can't fire yourself" end
     SetPlayerJob(targetSource, "unemployed", 0)
     ShowNotification(targetSource, "You have been fired")
     return true
@@ -68,7 +70,7 @@ end)
 
 -- Hire nearby player
 lib.callback.register("pickle_clubs:hirePlayer", function(source, clubId, targetSource)
-    if not PlayerHasClubAccess(source, clubId) then return false, "No access" end
+    if not PlayerCanManage(source, clubId) then return false, "No access" end
     local club = Clubs[clubId]
     local jobName = GetPrimaryJobName(club)
     if not jobName or not SetPlayerJob then return false, "No job configured" end
@@ -82,14 +84,14 @@ end)
 
 -- Get/set entry settings for a club
 lib.callback.register("pickle_clubs:getEntrySettings", function(source, clubId)
-    if not PlayerHasClubAccess(source, clubId) then return nil end
+    if not PlayerCanManage(source, clubId) then return nil end
     local club = Clubs[clubId]
     if not club then return nil end
     return club.entry_settings or {}
 end)
 
 lib.callback.register("pickle_clubs:setEntrySettings", function(source, clubId, settings)
-    if not PlayerHasClubAccess(source, clubId) then return false end
+    if not PlayerCanManage(source, clubId) then return false end
     local club = Clubs[clubId]
     if not club then return false end
     if UpdateClub then

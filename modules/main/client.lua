@@ -171,19 +171,24 @@ RegisterNUICallback("clubManagementAction", function(payload, cb)
 
     if action == "createClub" then
         local defaultCoords = GetEntityCoords(PlayerPedId())
+        local createCoords = data.coords or defaultCoords
         TriggerServerEvent("pickle_clubs:createClub", {
             label = data.label,
             description = data.description or "",
-            coords = data.coords or defaultCoords,
+            coords = { x = createCoords.x, y = createCoords.y, z = createCoords.z },
             jobs = data.jobs,
             drink_menu = type(data.drink_menu) == "table" and next(data.drink_menu) and data.drink_menu or Config.DefaultDrinks or {},
             blip = data.blip,
         })
     elseif action == "updateClub" then
+        local updateCoords = data.coords
+        if updateCoords then
+            updateCoords = { x = updateCoords.x, y = updateCoords.y, z = updateCoords.z }
+        end
         TriggerServerEvent("pickle_clubs:updateClub", tonumber(data.clubId), {
             label = data.label,
             description = data.description or "",
-            coords = data.coords,
+            coords = updateCoords,
             jobs = data.jobs,
             drink_menu = data.drink_menu,
             blip = data.blip,
@@ -220,7 +225,7 @@ RegisterNUICallback("clubManagementAction", function(payload, cb)
             end)
             if coords then
                 Clubs[clubId].coords = coords
-                TriggerServerEvent("pickle_clubs:updateClub", clubId, { coords = coords })
+                TriggerServerEvent("pickle_clubs:updateClub", clubId, { coords = { x = coords.x, y = coords.y, z = coords.z } })
                 if ClubManagementNuiVisible then
                     SendNUIMessage({
                         type = "updateClubManagement",
@@ -328,7 +333,21 @@ local function UpdateClubBlip(id)
     })
 end
 
+-- Coerce {x, y, z} tables (the DB/JSON shape used since the vector-blip fix)
+-- back to a vector3 so the rest of the client can do `pcoords - coords` math.
+local function EnsureVector3(c)
+    if not c then return vector3(0.0, 0.0, 0.0) end
+    if type(c) == "vector3" then return c end
+    if type(c) == "table" then
+        return vector3(tonumber(c.x) or tonumber(c[1]) or 0.0,
+                       tonumber(c.y) or tonumber(c[2]) or 0.0,
+                       tonumber(c.z) or tonumber(c[3]) or 0.0)
+    end
+    return vector3(0.0, 0.0, 0.0)
+end
+
 function RegisterClub(id, data)
+    if data and data.coords then data.coords = EnsureVector3(data.coords) end
     Clubs[id] = data
     UpdateClubBlip(id)
     local pcoords = GetEntityCoords(PlayerPedId())
@@ -1044,7 +1063,8 @@ local function OpenClubManageMenu(clubId)
                     enableCancel = true,
                 })
                 if gizmo and gizmo.position then
-                    TriggerServerEvent("pickle_clubs:updateClub", clubId, { coords = gizmo.position })
+                    local p = gizmo.position
+                    TriggerServerEvent("pickle_clubs:updateClub", clubId, { coords = { x = p.x, y = p.y, z = p.z } })
                 end
             end,
         },
@@ -1252,10 +1272,11 @@ function OpenClubManagement()
                         enableCancel = true,
                     })
                     if not gizmo or not gizmo.position then return end
+                    local p = gizmo.position
                     TriggerServerEvent("pickle_clubs:createClub", {
                         label = input[1],
                         description = input[2] or "",
-                        coords = gizmo.position,
+                        coords = { x = p.x, y = p.y, z = p.z },
                     })
                 end,
             }

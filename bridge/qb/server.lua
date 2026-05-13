@@ -209,39 +209,43 @@ function AddAlcohol(source, amount)
     TriggerClientEvent("pickle_clubs:addAlcohol", source, amount)
 end
 
-function AddSocietyMoney(name, amount)
-    if Config.FrameworkSettings.society == "qb-management" then
-        exports["qb-management"]:AddMoney(name, amount)
-    else
-        exports["qb-banking"]:AddMoney(name, amount)
+local _warnedSociety = false
+
+local function SocietyCall(action, name, amount, cb)
+    local sys = (Config and Config.FrameworkSettings and Config.FrameworkSettings.society) or "qb-management"
+    local altExport = (sys == "qb-management") and "qb-banking" or "qb-management"
+    local exportFns = {
+        add    = { "AddMoney", "AddMoneySociety" },
+        remove = { "RemoveMoney", "RemoveMoneySociety" },
+        get    = { "GetAccount", "GetAccountBalance" },
+    }
+    local eventNames = {
+        add    = "qb-management:server:AddMoney",
+        remove = "qb-management:server:RemoveMoney",
+    }
+    for _, fn in ipairs(exportFns[action]) do
+        local ok, res = pcall(function() return exports[sys][fn](exports[sys], name, amount) end)
+        if ok then if cb then cb(res or 0) end; return true end
     end
+    for _, fn in ipairs(exportFns[action]) do
+        local ok, res = pcall(function() return exports[altExport][fn](exports[altExport], name, amount) end)
+        if ok then if cb then cb(res or 0) end; return true end
+    end
+    if eventNames[action] then
+        local ok = pcall(TriggerEvent, eventNames[action], name, amount)
+        if ok then if cb then cb(0) end; return true end
+    end
+    if not _warnedSociety then
+        _warnedSociety = true
+        print(("[pickle_clubs] WARNING: no working society API found for '%s' (tried exports on %s/%s and event fallback)"):format(action, sys, altExport))
+    end
+    if cb then cb(0) end
+    return false
 end
 
-function GetSocietyBalance(name, cb)
-    if type(cb) ~= "function" then return end
-    local system = Config.FrameworkSettings.society or "qb-management"
-    if system == "qb-management" then
-        local ok, balance = pcall(function()
-            return exports["qb-management"]:GetAccount(name) or 0
-        end)
-        cb(ok and balance or 0)
-    else
-        local ok, balance = pcall(function()
-            return exports["qb-banking"]:GetAccount(name) or 0
-        end)
-        cb(ok and balance or 0)
-    end
-end
-
-function RemoveSocietyMoney(name, amount, cb)
-    local system = Config.FrameworkSettings.society or "qb-management"
-    if system == "qb-management" then
-        exports["qb-management"]:RemoveMoney(name, amount)
-    else
-        exports["qb-banking"]:RemoveMoney(name, amount)
-    end
-    if type(cb) == "function" then cb() end
-end
+function AddSocietyMoney(name, amount)         SocietyCall("add", name, amount) end
+function RemoveSocietyMoney(name, amount, cb)  SocietyCall("remove", name, amount, cb) end
+function GetSocietyBalance(name, cb)           if type(cb) == "function" then SocietyCall("get", name, 0, cb) end end
 
 -- Inventory Fallback
 

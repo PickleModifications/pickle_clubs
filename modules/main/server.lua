@@ -299,12 +299,12 @@ end
 function CreateClub(data, cb)
     local payloadCoords = NormalizeForDb(data.coords)
     local jobs = NormalizeJobs(data.jobs or {})
-    local jobsJson = json.encode(jobs)
+    local jobsJson = json.encode(NormalizeForDb(jobs))
     local drinkMenu = type(data.drink_menu) == "table" and data.drink_menu or {}
-    local drinkMenuJson = json.encode(drinkMenu)
-    local blip = type(data.blip) == "table" and data.blip or nil
+    local drinkMenuJson = json.encode(NormalizeForDb(drinkMenu))
+    local blip = type(data.blip) == "table" and NormalizeForDb(data.blip) or nil
     local blipJson = blip and json.encode(blip) or nil
-    local entrySettings = type(data.entry_settings) == "table" and data.entry_settings or nil
+    local entrySettings = type(data.entry_settings) == "table" and NormalizeForDb(data.entry_settings) or nil
     local entrySettingsJson = entrySettings and json.encode(entrySettings) or nil
     MySQL.Async.insert(
         "INSERT INTO pickle_clubs (label, description, coords, jobs, drink_menu, blip, entry_settings) VALUES (@label, @description, @coords, @jobs, @drink_menu, @blip, @entry_settings)",
@@ -377,10 +377,10 @@ function UpdateClub(id, data, cb)
             ["@label"] = updateData.label,
             ["@description"] = updateData.description or "",
             ["@coords"] = json.encode(NormalizeForDb(updateData.coords)),
-            ["@jobs"] = json.encode(updateData.jobs or {}),
-            ["@drink_menu"] = json.encode(updateData.drink_menu or {}),
-            ["@blip"] = updateData.blip and json.encode(updateData.blip) or nil,
-            ["@entry_settings"] = updateData.entry_settings and json.encode(updateData.entry_settings) or nil,
+            ["@jobs"] = json.encode(NormalizeForDb(updateData.jobs or {})),
+            ["@drink_menu"] = json.encode(NormalizeForDb(updateData.drink_menu or {})),
+            ["@blip"] = updateData.blip and json.encode(NormalizeForDb(updateData.blip)) or nil,
+            ["@entry_settings"] = updateData.entry_settings and json.encode(NormalizeForDb(updateData.entry_settings)) or nil,
         },
         function(affectedRows)
             if affectedRows and affectedRows > 0 then
@@ -727,7 +727,7 @@ end
 
 lib.callback.register("pickle_clubs:getSocietyBalance", function(source, clubId)
     if not clubId or not Clubs[clubId] then return nil end
-    if not PlayerHasClubAccess(source, clubId) then return nil end
+    if not CanManageClub(source, clubId) then return nil end
     local club = Clubs[clubId]
     local societyName = GetPrimaryJobName(club)
     if not societyName then return 0 end
@@ -745,7 +745,7 @@ end)
 
 lib.callback.register("pickle_clubs:societyDeposit", function(source, clubId, amount)
     if not clubId or not Clubs[clubId] then return false, "Club not found" end
-    if not PlayerHasClubAccess(source, clubId) then return false, "No access" end
+    if not CanManageClub(source, clubId) then return false, "No access" end
     amount = tonumber(amount)
     if not amount or amount <= 0 then return false, "Invalid amount" end
     local club = Clubs[clubId]
@@ -760,7 +760,7 @@ end)
 
 lib.callback.register("pickle_clubs:societyWithdraw", function(source, clubId, amount)
     if not clubId or not Clubs[clubId] then return false, "Club not found" end
-    if not PlayerHasClubAccess(source, clubId) then return false, "No access" end
+    if not CanManageClub(source, clubId) then return false, "No access" end
     amount = tonumber(amount)
     if not amount or amount <= 0 then return false, "Invalid amount" end
     local club = Clubs[clubId]
